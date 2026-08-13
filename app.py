@@ -20,41 +20,162 @@ supabase = create_client(
 # ============================================================
 
 st.set_page_config(
-    page_title="Vehicle Weighing System",
+    page_title="Manual RORO",
     page_icon="⚓",
-    layout="centered"
+    layout="wide"
 )
 
 
 # ============================================================
-# SESSION
+# SESSION STATE
 # ============================================================
 
-if "user" not in st.session_state:
-    st.session_state.user = None
+if "access_token" not in st.session_state:
+    st.session_state.access_token = None
+
+if "refresh_token" not in st.session_state:
+    st.session_state.refresh_token = None
+
+if "profile" not in st.session_state:
+    st.session_state.profile = None
 
 
 # ============================================================
-# LOGIN
+# RESTORE SESSION
 # ============================================================
 
-if st.session_state.user is None:
+if (
+    st.session_state.access_token
+    and st.session_state.refresh_token
+):
 
-    st.title("⚓ Vehicle Weighing System")
+    try:
+        supabase.auth.set_session(
+            st.session_state.access_token,
+            st.session_state.refresh_token
+        )
+    except Exception:
+        st.session_state.access_token = None
+        st.session_state.refresh_token = None
+        st.session_state.profile = None
+
+
+# ============================================================
+# LOGIN FUNCTION
+# ============================================================
+
+def login(email, password):
+
+    try:
+
+        response = supabase.auth.sign_in_with_password({
+            "email": email,
+            "password": password
+        })
+
+        if not response.session:
+            return False, "Session login tidak ditemukan."
+
+        # Simpan session
+        st.session_state.access_token = response.session.access_token
+        st.session_state.refresh_token = response.session.refresh_token
+
+        # ====================================================
+        # AMBIL PROFILE DARI DATABASE
+        # ====================================================
+
+        profile_response = supabase.rpc(
+            "get_my_profile"
+        ).execute()
+
+        if not profile_response.data:
+
+            supabase.auth.sign_out()
+
+            st.session_state.access_token = None
+            st.session_state.refresh_token = None
+
+            return False, (
+                "Akun berhasil login tetapi profile "
+                "tidak ditemukan di public.users."
+            )
+
+        profile = profile_response.data[0]
+
+        # ====================================================
+        # CEK STATUS
+        # ====================================================
+
+        if profile["status"] != "ACTIVE":
+
+            supabase.auth.sign_out()
+
+            st.session_state.access_token = None
+            st.session_state.refresh_token = None
+
+            return False, (
+                "Akun Anda tidak aktif. "
+                "Hubungi Administrator."
+            )
+
+        # Simpan profile
+        st.session_state.profile = profile
+
+        return True, "Login berhasil."
+
+    except Exception as e:
+
+        return False, str(e)
+
+
+# ============================================================
+# LOGOUT
+# ============================================================
+
+def logout():
+
+    try:
+        supabase.auth.sign_out()
+    except Exception:
+        pass
+
+    st.session_state.access_token = None
+    st.session_state.refresh_token = None
+    st.session_state.profile = None
+
+    st.rerun()
+
+
+# ============================================================
+# LOGIN PAGE
+# ============================================================
+
+if st.session_state.profile is None:
+
+    st.title("⚓ Manual RORO")
 
     st.subheader("Login Administrator")
 
+    st.write(
+        "Sistem Input Manual Kendaraan Masuk Pelabuhan"
+    )
+
+    st.divider()
+
     email = st.text_input(
-        "Email"
+        "Email",
+        placeholder="Masukkan email Admin"
     )
 
     password = st.text_input(
         "Password",
-        type="password"
+        type="password",
+        placeholder="Masukkan password"
     )
 
     if st.button(
         "LOGIN",
+        type="primary",
         use_container_width=True
     ):
 
@@ -66,26 +187,22 @@ if st.session_state.user is None:
 
         else:
 
-            try:
+            with st.spinner("Memproses login..."):
 
-                response = supabase.auth.sign_in_with_password({
-                    "email": email,
-                    "password": password
-                })
-
-                st.session_state.user = response.user
-
-                st.success(
-                    "Login berhasil."
+                success, message = login(
+                    email,
+                    password
                 )
+
+            if success:
+
+                st.success(message)
 
                 st.rerun()
 
-            except Exception as e:
+            else:
 
-                st.error(
-                    f"Login gagal: {str(e)}"
-                )
+                st.error(message)
 
 
 # ============================================================
@@ -94,36 +211,131 @@ if st.session_state.user is None:
 
 else:
 
-    user = st.session_state.user
+    profile = st.session_state.profile
+
+    # --------------------------------------------------------
+    # SIDEBAR
+    # --------------------------------------------------------
+
+    with st.sidebar:
+
+        st.title("⚓ Manual RORO")
+
+        st.divider()
+
+        st.write("**Pengguna**")
+
+        st.write(profile["name"])
+
+        st.write(
+            f"NIPP: `{profile['nipp']}`"
+        )
+
+        st.write(
+            f"Role: `{profile['role_code']}`"
+        )
+
+        st.write(
+            f"Status: `{profile['status']}`"
+        )
+
+        st.divider()
+
+        if st.button(
+            "Logout",
+            use_container_width=True
+        ):
+
+            logout()
+
+
+    # --------------------------------------------------------
+    # HEADER
+    # --------------------------------------------------------
 
     st.title("Dashboard")
 
-    st.success(
-        "Login berhasil."
-    )
-
     st.write(
-        "Supabase Auth User ID:"
+        f"Selamat datang, **{profile['name']}**."
     )
 
-    st.code(
-        user.id
-    )
+    st.divider()
 
-    st.write(
-        "Email:"
-    )
 
-    st.write(
-        user.email
-    )
+    # --------------------------------------------------------
+    # ADMIN DASHBOARD
+    # --------------------------------------------------------
 
-    if st.button(
-        "LOGOUT"
-    ):
+    if profile["role_code"] == "ADMIN":
 
-        supabase.auth.sign_out()
+        st.subheader("Administrator")
 
-        st.session_state.user = None
+        col1, col2, col3 = st.columns(3)
 
-        st.rerun()
+        with col1:
+
+            st.info(
+                "👤\n\n"
+                "**Manajemen User**\n\n"
+                "Kelola user, role dan status."
+            )
+
+        with col2:
+
+            st.info(
+                "🚛\n\n"
+                "**Transaksi Kendaraan**\n\n"
+                "Input dan monitoring kendaraan."
+            )
+
+        with col3:
+
+            st.info(
+                "📊\n\n"
+                "**Laporan**\n\n"
+                "Download data transaksi."
+            )
+
+
+    # --------------------------------------------------------
+    # MANAGER DASHBOARD
+    # --------------------------------------------------------
+
+    elif profile["role_code"] == "MANAGER":
+
+        st.subheader("Manager")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+
+            st.info(
+                "🚛\n\n"
+                "**Monitoring Transaksi**"
+            )
+
+        with col2:
+
+            st.info(
+                "📊\n\n"
+                "**Laporan Timbangan**"
+            )
+
+
+    # --------------------------------------------------------
+    # OPERATOR DASHBOARD
+    # --------------------------------------------------------
+
+    elif profile["role_code"] == "OPERATOR":
+
+        st.subheader("Operator")
+
+        st.info(
+            "🚛\n\n"
+            "**Input Kendaraan**"
+        )
+
+        st.info(
+            "🧾\n\n"
+            "**Reprint Tiket**"
+        )
