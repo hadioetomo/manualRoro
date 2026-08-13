@@ -1,6 +1,5 @@
 import streamlit as st
 import requests
-from datetime import datetime
 from supabase import create_client
 
 
@@ -16,8 +15,6 @@ supabase = create_client(
     SUPABASE_KEY
 )
 
-
-# API SCHEDULEBOARD
 SCHEDULE_API = (
     "https://ptosr.pelindo.co.id/"
     "ScheduleBoard/GetData"
@@ -26,7 +23,7 @@ SCHEDULE_API = (
 
 
 # ============================================================
-# PAGE CONFIG
+# PAGE
 # ============================================================
 
 st.set_page_config(
@@ -38,26 +35,86 @@ st.set_page_config(
 
 
 # ============================================================
-# SESSION STATE
+# SESSION
 # ============================================================
 
-if "access_token" not in st.session_state:
-    st.session_state.access_token = None
+defaults = {
+    "access_token": None,
+    "refresh_token": None,
+    "profile": None,
+    "schedule_data": [],
+    "selected_vessel": None,
+}
 
-if "refresh_token" not in st.session_state:
-    st.session_state.refresh_token = None
+for key, value in defaults.items():
 
-if "profile" not in st.session_state:
-    st.session_state.profile = None
+    if key not in st.session_state:
+        st.session_state[key] = value
 
-if "schedule_data" not in st.session_state:
-    st.session_state.schedule_data = []
 
-if "selected_vessel" not in st.session_state:
-    st.session_state.selected_vessel = None
+# ============================================================
+# CSS
+# ============================================================
 
-if "manual_mode" not in st.session_state:
-    st.session_state.manual_mode = False
+st.markdown(
+    """
+    <style>
+
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+        max-width: 1200px;
+    }
+
+    .main-title {
+        font-size: 32px;
+        font-weight: 700;
+        margin-bottom: 4px;
+    }
+
+    .sub-title {
+        color: #6b7280;
+        font-size: 15px;
+        margin-bottom: 25px;
+    }
+
+    .vessel-card {
+        padding: 20px;
+        border-radius: 14px;
+        background: #f7f8fa;
+        border: 1px solid #e5e7eb;
+        margin-bottom: 20px;
+    }
+
+    .vessel-name {
+        font-size: 25px;
+        font-weight: 700;
+    }
+
+    .vessel-info {
+        color: #555;
+        font-size: 14px;
+        line-height: 1.8;
+    }
+
+    .section-title {
+        font-size: 18px;
+        font-weight: 650;
+        margin-top: 15px;
+        margin-bottom: 8px;
+    }
+
+    .bruto-box {
+        padding: 12px;
+        border-radius: 10px;
+        background: #f7f8fa;
+        border: 1px solid #e5e7eb;
+    }
+
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 
 # ============================================================
@@ -84,7 +141,6 @@ def login(email, password):
             response.session.refresh_token
         )
 
-        # Ambil profile
         profile_response = supabase.rpc(
             "get_my_profile"
         ).execute()
@@ -95,21 +151,18 @@ def login(email, password):
 
             return (
                 False,
-                "User berhasil login tetapi "
-                "profile tidak ditemukan."
+                "Profile user tidak ditemukan."
             )
 
         profile = profile_response.data[0]
 
-        # Cek status
         if profile["status"] != "ACTIVE":
 
             supabase.auth.sign_out()
 
             return (
                 False,
-                "Akun tidak aktif. "
-                "Hubungi Administrator."
+                "Akun tidak aktif."
             )
 
         st.session_state.profile = profile
@@ -132,15 +185,13 @@ def logout():
     except Exception:
         pass
 
-    st.session_state.access_token = None
-    st.session_state.refresh_token = None
-    st.session_state.profile = None
+    st.session_state.clear()
 
     st.rerun()
 
 
 # ============================================================
-# API - GET SCHEDULE
+# GET API
 # ============================================================
 
 def get_schedule():
@@ -156,11 +207,9 @@ def get_schedule():
 
         data = response.json()
 
-        # API bisa mengembalikan list langsung
         if isinstance(data, list):
             return data, None
 
-        # Beberapa API membungkus data
         if isinstance(data, dict):
 
             if "data" in data:
@@ -169,7 +218,6 @@ def get_schedule():
             if "Data" in data:
                 return data["Data"], None
 
-            # Jika response hanya satu object
             if "NAMA_KAPAL" in data:
                 return [data], None
 
@@ -181,11 +229,7 @@ def get_schedule():
 
     except requests.exceptions.RequestException as e:
 
-        return [], f"API tidak dapat diakses: {str(e)}"
-
-    except ValueError:
-
-        return [], "Response API bukan JSON yang valid."
+        return [], f"API tidak dapat diakses: {e}"
 
     except Exception as e:
 
@@ -193,14 +237,12 @@ def get_schedule():
 
 
 # ============================================================
-# LOAD SCHEDULE
+# LOAD API
 # ============================================================
 
-def load_schedule():
+def refresh_schedule():
 
-    with st.spinner(
-        "Mengambil jadwal kapal dari API..."
-    ):
+    with st.spinner("Mengambil kegiatan kapal..."):
 
         data, error = get_schedule()
 
@@ -212,125 +254,49 @@ def load_schedule():
 
     st.session_state.schedule_data = data
 
-    return True, f"{len(data)} jadwal ditemukan."
+    return True, f"{len(data)} kegiatan kapal tersedia."
 
 
 # ============================================================
-# VEHICLE GROUP
-# ============================================================
-
-# Untuk sementara hanya kode golongan.
-# Deskripsi dapat kita sesuaikan dengan ketentuan
-# operasional/terminal yang digunakan.
-
-VEHICLE_GROUPS = {
-    "1": "Golongan 1",
-    "2": "Golongan 2",
-    "3": "Golongan 3",
-    "4": "Golongan 4",
-    "5": "Golongan 5",
-    "6": "Golongan 6",
-}
-
-
-# ============================================================
-# DEFAULT VEHICLE TYPES
-# ============================================================
-
-# Ini sementara.
-# Nanti dipindahkan ke tabel master_vehicle_types
-# sehingga Admin dapat menambah/mengubahnya.
-
-DEFAULT_VEHICLE_TYPES = {
-
-    "1": [
-        "Sepeda"
-    ],
-
-    "2": [
-        "Sepeda Motor"
-    ],
-
-    "3": [
-        "Kendaraan Roda 3",
-        "Kendaraan Roda 4"
-    ],
-
-    "4": [
-        "Mobil Penumpang",
-        "Pickup"
-    ],
-
-    "5": [
-        "Truk",
-        "Bus"
-    ],
-
-    "6": [
-        "Truk Besar",
-        "Trailer"
-    ]
-}
-
-
-# ============================================================
-# FORMAT DATE
-# ============================================================
-
-def format_datetime(value):
-
-    if not value:
-        return "-"
-
-    return str(value).replace("/", "-")
-
-
-# ============================================================
-# LOGIN PAGE
+# LOGIN SCREEN
 # ============================================================
 
 if st.session_state.profile is None:
 
-    st.title("⚓ Manual RORO")
-
-    st.subheader(
-        "Sistem Input Manual Kendaraan Masuk Pelabuhan"
+    st.markdown(
+        '<div class="main-title">⚓ Manual RORO</div>',
+        unsafe_allow_html=True
     )
 
-    st.caption(
-        "Pelindo Sub Regional Jawa"
+    st.markdown(
+        '<div class="sub-title">'
+        'Sistem Input Kendaraan Pelabuhan'
+        '</div>',
+        unsafe_allow_html=True
     )
 
     st.divider()
 
-    col1, col2, col3 = st.columns(
-        [1, 2, 1]
-    )
+    col1, col2, col3 = st.columns([1, 1.4, 1])
 
     with col2:
 
-        st.markdown(
-            "### 🔐 Login Administrator"
-        )
+        st.subheader("Login Administrator")
 
         email = st.text_input(
-            "Email",
-            placeholder="Email Admin"
+            "Email"
         )
 
         password = st.text_input(
             "Password",
-            type="password",
-            placeholder="Password"
+            type="password"
         )
 
-        login_button = st.button(
-            "LOGIN",
+        if st.button(
+            "Masuk",
             type="primary",
             use_container_width=True
-        )
-
-        if login_button:
+        ):
 
             if not email or not password:
 
@@ -340,9 +306,7 @@ if st.session_state.profile is None:
 
             else:
 
-                with st.spinner(
-                    "Memproses login..."
-                ):
+                with st.spinner("Login..."):
 
                     success, message = login(
                         email,
@@ -350,8 +314,6 @@ if st.session_state.profile is None:
                     )
 
                 if success:
-
-                    st.success(message)
 
                     st.rerun()
 
@@ -363,25 +325,30 @@ if st.session_state.profile is None:
 
 
 # ============================================================
-# SIDEBAR
+# PROFILE
 # ============================================================
 
 profile = st.session_state.profile
 
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+
 with st.sidebar:
 
-    st.title("⚓ Manual RORO")
+    st.markdown(
+        "## ⚓ Manual RORO"
+    )
 
     st.caption(
-        "Vehicle Entry & Weighing System"
+        "Vehicle Entry System"
     )
 
     st.divider()
 
-    st.write("**LOGIN USER**")
-
     st.write(
-        profile["name"]
+        f"**{profile['name']}**"
     )
 
     st.caption(
@@ -398,17 +365,17 @@ with st.sidebar:
         "MENU",
         [
             "🏠 Dashboard",
-            "🚢 Jadwal Kapal",
+            "🚢 Kegiatan Kapal",
             "🚛 Input Kendaraan",
             "🖨️ Reprint",
-            "📊 Laporan",
+            "📊 Laporan"
         ]
     )
 
     st.divider()
 
     if st.button(
-        "🚪 Logout",
+        "Keluar",
         use_container_width=True
     ):
 
@@ -421,119 +388,86 @@ with st.sidebar:
 
 if menu == "🏠 Dashboard":
 
-    st.title(
-        "🏠 Dashboard Admin"
+    st.markdown(
+        '<div class="main-title">'
+        'Dashboard'
+        '</div>',
+        unsafe_allow_html=True
     )
 
-    st.write(
-        f"Selamat datang, **{profile['name']}**."
+    st.markdown(
+        '<div class="sub-title">'
+        'Selamat datang di Manual RORO'
+        '</div>',
+        unsafe_allow_html=True
     )
 
-    st.divider()
-
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3 = st.columns(3)
 
     with col1:
 
         st.metric(
-            "Role",
-            profile["role_code"]
-        )
-
-    with col2:
-
-        st.metric(
-            "Status",
-            profile["status"]
-        )
-
-    with col3:
-
-        st.metric(
-            "Jadwal Kapal",
+            "Kegiatan Kapal",
             len(
                 st.session_state.schedule_data
             )
         )
 
-    with col4:
-
-        st.metric(
-            "Mode",
-            "API"
-        )
-
-    st.divider()
-
-    st.subheader(
-        "Jadwal Kapal"
-    )
-
-    if not st.session_state.schedule_data:
-
-        st.info(
-            "Belum ada data jadwal. "
-            "Silakan buka menu Jadwal Kapal."
-        )
-
-    else:
-
-        st.dataframe(
-            st.session_state.schedule_data,
-            use_container_width=True
-        )
-
-
-# ============================================================
-# JADWAL KAPAL
-# ============================================================
-
-elif menu == "🚢 Jadwal Kapal":
-
-    st.title(
-        "🚢 Jadwal Kapal"
-    )
-
-    st.write(
-        "Sumber data:"
-    )
-
-    st.code(
-        SCHEDULE_API
-    )
-
-    col1, col2 = st.columns(
-        [1, 5]
-    )
-
-    with col1:
-
-        if st.button(
-            "🔄 Refresh API",
-            type="primary"
-        ):
-
-            success, message = load_schedule()
-
-            if success:
-                st.success(message)
-            else:
-                st.error(message)
-
     with col2:
 
-        if st.session_state.schedule_data:
+        st.metric(
+            "User",
+            1
+        )
 
-            st.success(
-                f"{len(st.session_state.schedule_data)} "
-                "data jadwal tersedia."
-            )
+    with col3:
+
+        st.metric(
+            "Status",
+            "ONLINE"
+        )
 
     st.divider()
 
-    # --------------------------------------------------------
-    # API DATA
-    # --------------------------------------------------------
+    st.info(
+        "Gunakan menu **Kegiatan Kapal** untuk "
+        "memuat jadwal kapal dari ScheduleBoard."
+    )
+
+
+# ============================================================
+# KEGIATAN KAPAL
+# ============================================================
+
+elif menu == "🚢 Kegiatan Kapal":
+
+    st.markdown(
+        '<div class="main-title">'
+        'Kegiatan Kapal'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    st.markdown(
+        '<div class="sub-title">'
+        'Jadwal kapal dari ScheduleBoard'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    if st.button(
+        "🔄 Refresh Data",
+        type="primary"
+    ):
+
+        success, message = refresh_schedule()
+
+        if success:
+            st.success(message)
+        else:
+            st.error(message)
+
+    st.divider()
 
     if st.session_state.schedule_data:
 
@@ -549,34 +483,24 @@ elif menu == "🚢 Jadwal Kapal":
                 "Voyage":
                     item.get("VOYAGE_NO", "-"),
 
-                "Operator":
-                    item.get("NM_OPERATOR", "-"),
-
-                "Asal":
-                    item.get("NM_PORT_ASAL", "-"),
-
-                "Tujuan":
-                    item.get("NM_PORT_DEST", "-"),
+                "Rute":
+                    (
+                        f"{item.get('NM_PORT_ASAL', '-')}"
+                        " → "
+                        f"{item.get('NM_PORT_DEST', '-')}"
+                    ),
 
                 "Dermaga":
                     item.get("NM_DERMAGA", "-"),
 
                 "ETA":
-                    format_datetime(
-                        item.get("ETA")
-                    ),
+                    item.get("ETA", "-"),
 
                 "ETD":
-                    format_datetime(
-                        item.get("ETD")
-                    ),
+                    item.get("ETD", "-"),
 
                 "Status":
-                    item.get("VESOPS_STATUS", "-"),
-
-                "Gate":
-                    item.get("NO_GATE", "-"),
-
+                    item.get("VESOPS_STATUS", "-")
             })
 
         st.dataframe(
@@ -587,38 +511,32 @@ elif menu == "🚢 Jadwal Kapal":
 
     else:
 
-        st.warning(
-            "Data API belum tersedia."
+        st.info(
+            "Belum ada data. "
+            "Klik Refresh Data."
         )
 
     st.divider()
 
-    # --------------------------------------------------------
-    # MANUAL FALLBACK
-    # --------------------------------------------------------
-
     st.subheader(
-        "🛠️ Manual Fallback"
+        "Input Kapal Manual"
     )
 
-    st.write(
-        "Digunakan apabila API ScheduleBoard "
-        "mengalami gangguan atau data kapal "
-        "belum tersedia."
+    st.caption(
+        "Gunakan hanya jika data kapal dari API "
+        "tidak tersedia."
     )
 
-    manual = st.checkbox(
-        "Gunakan Input Kapal Manual"
-    )
+    with st.expander(
+        "Buka Input Manual"
+    ):
 
-    if manual:
-
-        manual_vessel = st.text_input(
-            "Nama Kapal Manual"
+        manual_name = st.text_input(
+            "Nama Kapal"
         )
 
         manual_voyage = st.text_input(
-            "Nomor Voyage Manual"
+            "Voyage"
         )
 
         manual_origin = st.text_input(
@@ -630,25 +548,14 @@ elif menu == "🚢 Jadwal Kapal":
         )
 
         manual_berth = st.text_input(
-            "Dermaga Tujuan"
-        )
-
-        manual_eta = st.text_input(
-            "ETA",
-            placeholder="YYYY-MM-DD HH:MM"
-        )
-
-        manual_etd = st.text_input(
-            "ETD",
-            placeholder="YYYY-MM-DD HH:MM"
+            "Dermaga"
         )
 
         if st.button(
-            "Gunakan Data Kapal Manual",
-            type="primary"
+            "Gunakan Kapal Manual"
         ):
 
-            if not manual_vessel:
+            if not manual_name:
 
                 st.error(
                     "Nama kapal wajib diisi."
@@ -659,7 +566,7 @@ elif menu == "🚢 Jadwal Kapal":
                 st.session_state.selected_vessel = {
 
                     "NAMA_KAPAL":
-                        manual_vessel,
+                        manual_name,
 
                     "VOYAGE_NO":
                         manual_voyage,
@@ -673,20 +580,12 @@ elif menu == "🚢 Jadwal Kapal":
                     "NM_DERMAGA":
                         manual_berth,
 
-                    "ETA":
-                        manual_eta,
-
-                    "ETD":
-                        manual_etd,
-
                     "SOURCE":
                         "MANUAL"
-
                 }
 
                 st.success(
-                    f"Kapal {manual_vessel} "
-                    "dipilih sebagai fallback manual."
+                    f"{manual_name} dipilih."
                 )
 
 
@@ -696,171 +595,162 @@ elif menu == "🚢 Jadwal Kapal":
 
 elif menu == "🚛 Input Kendaraan":
 
-    st.title(
-        "🚛 Input Kendaraan Masuk Pelabuhan"
+    st.markdown(
+        '<div class="main-title">'
+        'Input Kendaraan'
+        '</div>',
+        unsafe_allow_html=True
     )
 
-    st.caption(
-        "Input berat hanya menggunakan BRUTO."
+    st.markdown(
+        '<div class="sub-title">'
+        'Input kendaraan masuk pelabuhan'
+        '</div>',
+        unsafe_allow_html=True
     )
-
-    st.divider()
 
     # --------------------------------------------------------
-    # KAPAL
+    # SELECT VESSEL
     # --------------------------------------------------------
 
-    st.subheader(
-        "1. Kegiatan Kapal"
+    st.markdown(
+        '<div class="section-title">'
+        '1. Kegiatan Kapal'
+        '</div>',
+        unsafe_allow_html=True
     )
 
-    # Jika belum ada data API
     if not st.session_state.schedule_data:
 
-        st.warning(
-            "Belum ada jadwal kapal dari API."
-        )
+        success, message = refresh_schedule()
 
-        if st.button(
-            "🔄 Ambil Jadwal Kapal"
-        ):
+        if not success:
 
-            success, message = load_schedule()
+            st.error(message)
 
-            if success:
-
-                st.success(message)
-
-                st.rerun()
-
-            else:
-
-                st.error(message)
-
-    else:
+    if st.session_state.schedule_data:
 
         vessel_options = []
 
         for item in st.session_state.schedule_data:
 
-            vessel_name = item.get(
-                "NAMA_KAPAL",
-                "-"
-            )
-
-            voyage = item.get(
-                "VOYAGE_NO",
-                "-"
-            )
-
-            berth = item.get(
-                "NM_DERMAGA",
-                "-"
-            )
-
             label = (
-                f"{vessel_name} | "
-                f"Voyage {voyage} | "
-                f"{berth}"
+                f"{item.get('NAMA_KAPAL', '-')}"
+                f" | {item.get('VOYAGE_NO', '-')}"
+                f" | {item.get('NM_DERMAGA', '-')}"
             )
 
             vessel_options.append(
                 (label, item)
             )
 
-        vessel_labels = [
-            item[0]
-            for item in vessel_options
+        labels = [
+            x[0]
+            for x in vessel_options
         ]
 
         selected_label = st.selectbox(
-            "Pilih Kegiatan Kapal",
-            vessel_labels
+            "Pilih kegiatan kapal",
+            labels
         )
 
-        selected_item = next(
+        selected_vessel = next(
             item
             for label, item in vessel_options
             if label == selected_label
         )
 
         st.session_state.selected_vessel = (
-            selected_item
+            selected_vessel
         )
 
     # --------------------------------------------------------
-    # DISPLAY VESSEL
+    # VESSEL CARD
     # --------------------------------------------------------
 
-    if st.session_state.selected_vessel:
+    vessel = st.session_state.selected_vessel
 
-        vessel = (
-            st.session_state.selected_vessel
-        )
+    if vessel:
 
-        st.info(
-            f"🚢 **{vessel.get('NAMA_KAPAL', '-') }**  \n"
-            f"Voyage: `{vessel.get('VOYAGE_NO', '-')}`  \n"
-            f"Operator: `{vessel.get('NM_OPERATOR', '-')}`  \n"
-            f"Rute: `{vessel.get('NM_PORT_ASAL', '-')}` → "
-            f"`{vessel.get('NM_PORT_DEST', '-')}`  \n"
-            f"Dermaga: `{vessel.get('NM_DERMAGA', '-')}`"
+        st.markdown(
+            f"""
+            <div class="vessel-card">
+
+            <div class="vessel-name">
+            🚢 {vessel.get("NAMA_KAPAL", "-")}
+            </div>
+
+            <div class="vessel-info">
+
+            <b>Voyage:</b>
+            {vessel.get("VOYAGE_NO", "-")}
+            <br>
+
+            <b>Rute:</b>
+            {vessel.get("NM_PORT_ASAL", "-")}
+            →
+            {vessel.get("NM_PORT_DEST", "-")}
+            <br>
+
+            <b>Dermaga:</b>
+            {vessel.get("NM_DERMAGA", "-")}
+            <br>
+
+            <b>ETA:</b>
+            {vessel.get("ETA", "-")}
+            &nbsp;&nbsp;
+            <b>ETD:</b>
+            {vessel.get("ETD", "-")}
+
+            </div>
+
+            </div>
+            """,
+            unsafe_allow_html=True
         )
 
     st.divider()
 
     # --------------------------------------------------------
-    # QR TICKET
+    # QR
     # --------------------------------------------------------
 
-    st.subheader(
-        "2. Tiket Kendaraan"
+    st.markdown(
+        '<div class="section-title">'
+        '2. QR Tiket'
+        '</div>',
+        unsafe_allow_html=True
     )
 
     qr_ticket = st.text_input(
-        "Scan / Masukkan QR Code Tiket",
-        placeholder="Scan QR menggunakan scanner..."
-    )
-
-    st.caption(
-        "QR scanner USB biasanya akan terbaca "
-        "sebagai input keyboard."
+        "Scan QR Tiket",
+        placeholder="Scan menggunakan QR scanner..."
     )
 
     st.divider()
 
     # --------------------------------------------------------
-    # VEHICLE
+    # VEHICLE GROUP
     # --------------------------------------------------------
 
-    st.subheader(
-        "3. Jenis Kendaraan"
+    st.markdown(
+        '<div class="section-title">'
+        '3. Golongan Kendaraan'
+        '</div>',
+        unsafe_allow_html=True
     )
 
-    col1, col2 = st.columns(2)
-
-    with col1:
-
-        group = st.selectbox(
-            "Golongan Kendaraan",
-            list(VEHICLE_GROUPS.keys()),
-            format_func=lambda x:
-                VEHICLE_GROUPS[x]
-        )
-
-    with col2:
-
-        vehicle_types = (
-            DEFAULT_VEHICLE_TYPES.get(
-                group,
-                []
-            )
-        )
-
-        vehicle_type = st.selectbox(
-            "Jenis Kendaraan",
-            vehicle_types
-        )
+    vehicle_group = st.selectbox(
+        "Pilih golongan",
+        [
+            "Golongan 1",
+            "Golongan 2",
+            "Golongan 3",
+            "Golongan 4",
+            "Golongan 5",
+            "Golongan 6"
+        ]
+    )
 
     st.divider()
 
@@ -868,111 +758,74 @@ elif menu == "🚛 Input Kendaraan":
     # BRUTO
     # --------------------------------------------------------
 
-    st.subheader(
-        "4. Berat Kendaraan"
+    st.markdown(
+        '<div class="section-title">'
+        '4. Berat Bruto'
+        '</div>',
+        unsafe_allow_html=True
     )
 
     bruto = st.number_input(
-        "BRUTO (Kg)",
+        "Bruto (Kg)",
         min_value=0.0,
         step=10.0,
         format="%.2f"
     )
 
     st.caption(
-        "Sistem ini hanya mencatat berat BRUTO."
+        "Berat yang dicatat adalah berat BRUTO."
     )
 
     st.divider()
 
     # --------------------------------------------------------
-    # DERMAGA
+    # SUMMARY
     # --------------------------------------------------------
 
-    st.subheader(
-        "5. Dermaga Tujuan"
+    st.markdown(
+        '<div class="section-title">'
+        'Ringkasan'
+        '</div>',
+        unsafe_allow_html=True
     )
 
-    if st.session_state.selected_vessel:
+    col1, col2 = st.columns(2)
 
-        vessel_berth = (
-            st.session_state.selected_vessel
-            .get("NM_DERMAGA")
-        )
-
-    else:
-
-        vessel_berth = None
-
-    destination_berth = st.text_input(
-        "Nama Dermaga Tujuan",
-        value=vessel_berth or ""
-    )
-
-    st.divider()
-
-    # --------------------------------------------------------
-    # PREVIEW
-    # --------------------------------------------------------
-
-    st.subheader(
-        "6. Preview Transaksi"
-    )
-
-    preview_col1, preview_col2 = st.columns(2)
-
-    with preview_col1:
+    with col1:
 
         st.write(
-            "**Kapal:**",
-            (
-                st.session_state.selected_vessel
-                .get("NAMA_KAPAL", "-")
-                if st.session_state.selected_vessel
-                else "-"
-            )
+            "**Kapal**"
         )
 
         st.write(
-            "**Voyage:**",
-            (
-                st.session_state.selected_vessel
-                .get("VOYAGE_NO", "-")
-                if st.session_state.selected_vessel
-                else "-"
-            )
+            vessel.get("NAMA_KAPAL", "-")
+            if vessel else "-"
         )
 
         st.write(
-            "**Golongan:**",
-            VEHICLE_GROUPS[group]
+            "**Golongan**"
         )
 
         st.write(
-            "**Jenis:**",
-            vehicle_type
+            vehicle_group
         )
 
-    with preview_col2:
+    with col2:
 
         st.write(
-            "**QR Ticket:**",
+            "**QR Tiket**"
+        )
+
+        st.write(
             qr_ticket or "-"
         )
 
         st.write(
-            "**Bruto:**",
+            "**Bruto**"
+        )
+
+        st.write(
             f"{bruto:,.2f} Kg"
-        )
-
-        st.write(
-            "**Dermaga:**",
-            destination_berth or "-"
-        )
-
-        st.write(
-            "**Operator Input:**",
-            profile["nipp"]
         )
 
     st.divider()
@@ -989,24 +842,22 @@ elif menu == "🚛 Input Kendaraan":
 
         errors = []
 
-        if not st.session_state.selected_vessel:
+        if not vessel:
+
             errors.append(
                 "Kegiatan kapal belum dipilih."
             )
 
         if not qr_ticket:
+
             errors.append(
                 "QR tiket belum diisi."
             )
 
         if bruto <= 0:
+
             errors.append(
                 "Berat bruto harus lebih dari 0."
-            )
-
-        if not destination_berth:
-            errors.append(
-                "Dermaga tujuan belum diisi."
             )
 
         if errors:
@@ -1016,15 +867,14 @@ elif menu == "🚛 Input Kendaraan":
 
         else:
 
-            st.warning(
-                "Form sudah valid, tetapi tabel "
-                "transaksi Supabase belum kita aktifkan."
+            st.success(
+                "Data valid."
             )
 
             st.info(
-                "Tahap berikutnya adalah membuat "
-                "tabel weighing_transactions sebelum "
-                "data benar-benar disimpan."
+                "Penyimpanan transaksi akan "
+                "diaktifkan setelah tabel "
+                "weighing_transactions dibuat."
             )
 
 
@@ -1034,33 +884,40 @@ elif menu == "🚛 Input Kendaraan":
 
 elif menu == "🖨️ Reprint":
 
-    st.title(
-        "🖨️ Reprint Tiket"
+    st.markdown(
+        '<div class="main-title">'
+        'Reprint'
+        '</div>',
+        unsafe_allow_html=True
     )
 
-    st.info(
-        "Modul reprint akan menggunakan "
-        "QR tiket sebagai pencarian transaksi."
+    st.markdown(
+        '<div class="sub-title">'
+        'Cetak ulang tiket kendaraan'
+        '</div>',
+        unsafe_allow_html=True
     )
 
-    qr_search = st.text_input(
-        "QR Ticket"
+    qr = st.text_input(
+        "QR Tiket"
     )
 
     if st.button(
-        "CARI TRANSAKSI"
+        "Cari Transaksi",
+        type="primary"
     ):
 
-        if not qr_search:
+        if not qr:
 
             st.error(
-                "Masukkan QR ticket."
+                "Masukkan QR tiket."
             )
 
         else:
 
-            st.warning(
-                "Tabel transaksi belum dibuat."
+            st.info(
+                "Fitur reprint akan aktif "
+                "setelah database transaksi dibuat."
             )
 
 
@@ -1070,31 +927,35 @@ elif menu == "🖨️ Reprint":
 
 elif menu == "📊 Laporan":
 
-    st.title(
-        "📊 Laporan Timbangan"
+    st.markdown(
+        '<div class="main-title">'
+        'Laporan'
+        '</div>',
+        unsafe_allow_html=True
     )
 
-    st.write(
-        "Filter laporan akan tersedia setelah "
-        "tabel transaksi dibuat."
+    st.markdown(
+        '<div class="sub-title">'
+        'Log data timbangan'
+        '</div>',
+        unsafe_allow_html=True
     )
 
     col1, col2 = st.columns(2)
 
     with col1:
 
-        tanggal_awal = st.date_input(
-            "Tanggal Awal"
+        st.date_input(
+            "Tanggal Mulai"
         )
 
     with col2:
 
-        tanggal_akhir = st.date_input(
+        st.date_input(
             "Tanggal Akhir"
         )
 
     st.info(
-        "Nanti laporan dapat difilter berdasarkan "
-        "tanggal, nama kapal/kegiatan, golongan, "
-        "jenis kendaraan dan operator."
+        "Laporan akan dapat difilter berdasarkan "
+        "tanggal dan kegiatan kapal."
     )
