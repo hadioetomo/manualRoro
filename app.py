@@ -1,244 +1,215 @@
 import streamlit as st
 import requests
-import pandas as pd
 from supabase import create_client
 from datetime import datetime
-from dateutil import parser
+import pandas as pd
 import time
 
-# =====================================================
+# ========================
 # CONFIG
-# =====================================================
+# ========================
 
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 
-# untuk login user
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
-# untuk sync API
-SUPABASE_SERVICE_KEY = st.secrets["SUPABASE_SERVICE_KEY"]
+SUPABASE_SECRET_KEY = st.secrets["SUPABASE_SECRET_KEY"]
 
 PTOSR_API = st.secrets["PTOSR_API"]
 
-# client login
+# client biasa (login)
 supabase = create_client(
     SUPABASE_URL,
     SUPABASE_KEY
 )
 
-# client admin
+# client khusus sync
 supabase_admin = create_client(
     SUPABASE_URL,
-    SUPABASE_SERVICE_KEY
+    SUPABASE_SECRET_KEY
 )
 
-# =====================================================
-# LOGIN
-# =====================================================
+# ========================
+# FORMAT DATETIME
+# ========================
 
-if "login" not in st.session_state:
-    st.session_state.login = False
+def parse_datetime(dt):
 
-if not st.session_state.login:
-
-    st.title("🚢 RORO Gate System")
-
-    email = st.text_input("Email")
-    password = st.text_input("Password", type="password")
-
-    if st.button("Login"):
-
-        try:
-
-            res = supabase.auth.sign_in_with_password({
-                "email": email,
-                "password": password
-            })
-
-            st.session_state.login = True
-            st.session_state.user = res.user
-
-            st.rerun()
-
-        except Exception as e:
-            st.error(str(e))
-
-    st.stop()
-
-# =====================================================
-# DASHBOARD
-# =====================================================
-
-st.title("🚢 Dashboard Admin")
-
-# =====================================================
-# SYNC API
-# =====================================================
-
-def parse_date(value):
-
-    if not value:
+    if not dt:
         return None
 
     try:
-        return parser.parse(value).isoformat()
+        return datetime.strptime(
+            dt,
+            "%Y/%m/%d %H:%M"
+        ).isoformat()
     except:
         return None
 
 
-def sync_api():
+# ========================
+# SYNC API
+# ========================
 
-    try:
+def sync_schedule():
 
-        response = requests.get(
-            PTOSR_API,
-            timeout=30
-        )
+    result = requests.get(
+        PTOSR_API,
+        timeout=30
+    )
 
-        data = response.json()
+    if result.status_code != 200:
+        st.error("API gagal")
+        return
 
-        success = 0
-        failed = 0
+    data = result.json()
 
-        for kapal in data:
+    total = 0
 
-            try:
+    for kapal in data:
 
-                row = {
+        try:
 
-                    "voyage_no":
-                        kapal.get("VOYAGE_NO"),
+            payload = {
 
-                    "kd_jadwal":
-                        kapal.get("KD_JADWAL"),
+                "kd_jadwal":
+                    kapal.get("KD_JADWAL"),
 
-                    "nama_kapal":
-                        kapal.get("NAMA_KAPAL"),
+                "voyage_no":
+                    kapal.get("VOYAGE_NO"),
 
-                    "nm_dermaga":
-                        kapal.get("NM_DERMAGA"),
+                "nama_kapal":
+                    kapal.get("NAMA_KAPAL"),
 
-                    "eta":
-                        parse_date(
-                            kapal.get("ETA")
-                        ),
+                "nm_operator":
+                    kapal.get("NM_OPERATOR"),
 
-                    "etd":
-                        parse_date(
-                            kapal.get("ETD")
-                        ),
+                "kd_dermaga":
+                    kapal.get("KD_DERMAGA"),
 
-                    "kd_operator":
-                        kapal.get("KD_OPERATOR"),
+                "nm_dermaga":
+                    kapal.get("NM_DERMAGA"),
 
-                    "nm_operator":
-                        kapal.get("NM_OPERATOR"),
+                "port_asal":
+                    kapal.get("NM_PORT_ASAL"),
 
-                    "vesops_status":
-                        kapal.get("VESOPS_STATUS"),
+                "port_tujuan":
+                    kapal.get("NM_PORT_DEST"),
 
-                    "source":
-                        "API",
+                "eta":
+                    parse_datetime(
+                        kapal.get("ETA")
+                    ),
 
-                    "updated_at":
-                        datetime.now().isoformat()
-                }
+                "etd":
+                    parse_datetime(
+                        kapal.get("ETD")
+                    ),
 
-                # cek existing
-                old = supabase_admin.table(
-                    "schedule_voyages"
-                ).select(
-                    "id"
-                ).eq(
-                    "voyage_no",
-                    kapal.get("VOYAGE_NO")
-                ).execute()
+                "open_date":
+                    parse_datetime(
+                        kapal.get("OPEN_DATE")
+                    ),
 
-                if old.data:
+                "vesops_status":
+                    kapal.get(
+                        "VESOPS_STATUS"
+                    ),
 
-                    supabase_admin.table(
-                        "schedule_voyages"
-                    ).update(
-                        row
-                    ).eq(
-                        "voyage_no",
-                        kapal.get("VOYAGE_NO")
-                    ).execute()
+                "source":
+                    "API",
 
-                else:
+                "updated_at":
+                    datetime.now().isoformat()
+            }
 
-                    row["created_at"] = datetime.now().isoformat()
-
-                    supabase_admin.table(
-                        "schedule_voyages"
-                    ).insert(
-                        row
-                    ).execute()
-
-                success += 1
-
-            except Exception as e:
-
-                failed += 1
-
-                st.error(
-                    f"{kapal.get('NAMA_KAPAL')} : {e}"
+            # UPSERT
+            res = (
+                supabase_admin
+                .table("schedule_voyages")
+                .upsert(
+                    payload,
+                    on_conflict="kd_jadwal"
                 )
-
-        st.success(
-            f"Berhasil : {success}"
-        )
-
-        if failed > 0:
-            st.warning(
-                f"Gagal : {failed}"
+                .execute()
             )
 
-    except Exception as e:
-        st.error(str(e))
+            total += 1
 
-# =====================================================
-# BUTTON
-# =====================================================
+        except Exception as e:
 
-col1, col2 = st.columns(2)
+            st.warning(
+                f"{kapal.get('NAMA_KAPAL')} : {e}"
+            )
+
+    st.success(
+        f"Berhasil sync {total} kapal"
+    )
+
+
+# ========================
+# DASHBOARD
+# ========================
+
+st.title("🚢 Jadwal Kapal RORO")
+
+col1,col2 = st.columns(2)
 
 with col1:
 
     if st.button("🔄 Sinkron Sekarang"):
-
-        sync_api()
+        sync_schedule()
 
 with col2:
 
-    if st.button("📋 Lihat Jadwal"):
+    auto = st.checkbox(
+        "Auto Sync 10 Menit"
+    )
 
-        data = supabase_admin.table(
-            "schedule_voyages"
-        ).select("*").order(
-            "eta"
-        ).execute()
+# ========================
+# TAMPILKAN DATA
+# ========================
 
-        if data.data:
+data = (
+    supabase_admin
+    .table("schedule_voyages")
+    .select("*")
+    .order(
+        "eta",
+        desc=False
+    )
+    .execute()
+)
 
-            df = pd.DataFrame(data.data)
+if data.data:
 
-            st.dataframe(
-                df,
-                use_container_width=True
-            )
+    df = pd.DataFrame(data.data)
 
-# =====================================================
+    tampil = [
+        "nama_kapal",
+        "nm_dermaga",
+        "eta",
+        "etd",
+        "vesops_status"
+    ]
+
+    st.dataframe(
+        df[tampil],
+        use_container_width=True
+    )
+
+# ========================
 # AUTO SYNC
-# =====================================================
+# ========================
 
-if "last_sync" not in st.session_state:
-    st.session_state.last_sync = 0
+if auto:
 
-now = time.time()
+    st.info(
+        "Auto sync aktif"
+    )
 
-if now - st.session_state.last_sync > 600:
+    while True:
 
-    sync_api()
+        sync_schedule()
 
-    st.session_state.last_sync = now
+        time.sleep(600)
