@@ -1,5 +1,5 @@
 streamlit
 supabase
-requests
 pandas
-streamlit-autorefresh
+requests
+python-dateutil
