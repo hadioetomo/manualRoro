@@ -1,7 +1,10 @@
 import streamlit as st
 import requests
+import pandas as pd
+
 from datetime import datetime, date, time, timezone
 from supabase import create_client
+from streamlit_autorefresh import st_autorefresh
 
 
 # ============================================================
@@ -29,20 +32,45 @@ SCHEDULE_API = (
     "?kd_cabang=61&kd_terminal=601"
 )
 
+AUTO_SYNC_MINUTES = 10
+AUTO_REFRESH_MS = AUTO_SYNC_MINUTES * 60 * 1000
+
+
+# ============================================================
+# AUTO REFRESH
+# ============================================================
+
+st_autorefresh(
+    interval=AUTO_REFRESH_MS,
+    key="roro_auto_refresh"
+)
+
 
 # ============================================================
 # SESSION STATE
 # ============================================================
 
-DEFAULT_SESSION = {
+DEFAULT_STATE = {
+
     "profile": None,
+
+    "initial_sync_done": False,
+
+    "last_sync_time": None,
+
+    "last_sync_result": None,
+
+    "notification": None,
+
     "selected_vessel": None,
-    "schedule_loaded": False,
-    "last_transaction": None,
+
+    "last_transaction": None
 }
 
-for key, value in DEFAULT_SESSION.items():
+for key, value in DEFAULT_STATE.items():
+
     if key not in st.session_state:
+
         st.session_state[key] = value
 
 
@@ -57,7 +85,7 @@ st.markdown(
     .block-container {
         padding-top: 1.5rem;
         padding-bottom: 2rem;
-        max-width: 1200px;
+        max-width: 1250px;
     }
 
     .main-title {
@@ -104,6 +132,29 @@ st.markdown(
         font-weight: 700;
     }
 
+    .sync-card {
+        padding: 18px;
+        border-radius: 14px;
+        background: #f8fafc;
+        border: 1px solid #e5e7eb;
+    }
+
+    .new-vessel {
+        padding: 15px;
+        border-radius: 12px;
+        background: #eff6ff;
+        border: 1px solid #bfdbfe;
+        margin-bottom: 10px;
+    }
+
+    .changed-vessel {
+        padding: 15px;
+        border-radius: 12px;
+        background: #fff7ed;
+        border: 1px solid #fed7aa;
+        margin-bottom: 10px;
+    }
+
     .small-label {
         color: #6b7280;
         font-size: 13px;
@@ -116,140 +167,68 @@ st.markdown(
 
 
 # ============================================================
-# LOGIN
+# JSON SAFE
 # ============================================================
 
-def login(email, password):
+def json_safe(value):
 
-    try:
+    """
+    Mengubah datetime/date/dict/list menjadi
+    object yang aman dikirim ke Supabase JSON.
+    """
 
-        response = supabase.auth.sign_in_with_password({
-            "email": email,
-            "password": password
-        })
+    if isinstance(value, datetime):
 
-        if not response.session:
-            return False, "Session login tidak ditemukan."
+        return value.isoformat()
 
-        # ----------------------------------------------------
-        # Ambil profile user
-        # ----------------------------------------------------
+    if isinstance(value, date):
 
-        profile_response = supabase.rpc(
-            "get_my_profile"
-        ).execute()
+        return value.isoformat()
 
-        if not profile_response.data:
+    if isinstance(value, dict):
 
-            supabase.auth.sign_out()
+        return {
+            key: json_safe(val)
+            for key, val in value.items()
+        }
 
-            return False, "Profile user tidak ditemukan."
+    if isinstance(value, list):
 
-        profile = profile_response.data[0]
+        return [
+            json_safe(item)
+            for item in value
+        ]
 
-        if profile.get("status") != "ACTIVE":
-
-            supabase.auth.sign_out()
-
-            return False, "Akun tidak aktif."
-
-        st.session_state.profile = profile
-
-        return True, "Login berhasil."
-
-    except Exception as e:
-
-        return False, str(e)
+    return value
 
 
 # ============================================================
-# LOGOUT
-# ============================================================
-
-def logout():
-
-    try:
-        supabase.auth.sign_out()
-    except Exception:
-        pass
-
-    st.session_state.clear()
-
-    st.rerun()
-
-
-# ============================================================
-# API - GET SCHEDULE
-# ============================================================
-
-def get_schedule_from_api():
-
-    try:
-
-        response = requests.get(
-            SCHEDULE_API,
-            timeout=20
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-
-        # ----------------------------------------------------
-        # API langsung array
-        # ----------------------------------------------------
-
-        if isinstance(data, list):
-            return data, None
-
-        # ----------------------------------------------------
-        # API menggunakan data/Data
-        # ----------------------------------------------------
-
-        if isinstance(data, dict):
-
-            if isinstance(data.get("data"), list):
-                return data["data"], None
-
-            if isinstance(data.get("Data"), list):
-                return data["Data"], None
-
-            if "NAMA_KAPAL" in data:
-                return [data], None
-
-        return [], "Format response API tidak dikenali."
-
-    except requests.exceptions.Timeout:
-
-        return [], "API timeout."
-
-    except requests.exceptions.RequestException as e:
-
-        return [], f"API tidak dapat diakses: {e}"
-
-    except Exception as e:
-
-        return [], str(e)
-
-
-# ============================================================
-# DATE PARSER
+# PARSE DATETIME
 # ============================================================
 
 def parse_api_datetime(value):
 
     if not value:
+
         return None
 
     if isinstance(value, datetime):
+
         return value
 
     formats = [
+
         "%Y/%m/%d %H:%M",
+
         "%Y-%m-%d %H:%M",
+
         "%Y/%m/%d %H:%M:%S",
+
+        "%Y-%m-%d %H:%M:%S",
+
         "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%dT%H:%M:%S.%f",
+
+        "%Y-%m-%dT%H:%M:%S.%f"
     ]
 
     for fmt in formats:
@@ -264,27 +243,101 @@ def parse_api_datetime(value):
             )
 
         except ValueError:
+
             continue
 
     return None
 
 
 # ============================================================
-# BOOLEAN PARSER
+# BOOLEAN
 # ============================================================
 
 def parse_bool(value):
 
     if value is None:
+
         return None
 
-    if str(value) in ["1", "true", "TRUE", "True"]:
+    if str(value).lower() in [
+        "1",
+        "true"
+    ]:
+
         return True
 
-    if str(value) in ["0", "false", "FALSE", "False"]:
+    if str(value).lower() in [
+        "0",
+        "false"
+    ]:
+
         return False
 
     return None
+
+
+# ============================================================
+# API GET
+# ============================================================
+
+def get_schedule_from_api():
+
+    try:
+
+        response = requests.get(
+            SCHEDULE_API,
+            timeout=30
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        # API berupa array
+
+        if isinstance(data, list):
+
+            return data, None
+
+        # API berupa object
+
+        if isinstance(data, dict):
+
+            if isinstance(
+                data.get("data"),
+                list
+            ):
+
+                return data["data"], None
+
+            if isinstance(
+                data.get("Data"),
+                list
+            ):
+
+                return data["Data"], None
+
+            if "NAMA_KAPAL" in data:
+
+                return [data], None
+
+        return [], (
+            "Format response API tidak dikenali."
+        )
+
+    except requests.exceptions.Timeout:
+
+        return [], "API timeout."
+
+    except requests.exceptions.RequestException as e:
+
+        return [], (
+            f"API tidak dapat diakses: {e}"
+        )
+
+    except Exception as e:
+
+        return [], str(e)
 
 
 # ============================================================
@@ -293,7 +346,7 @@ def parse_bool(value):
 
 def convert_schedule_record(item):
 
-    return {
+    record = {
 
         "voyage_no":
             item.get("VOYAGE_NO"),
@@ -356,60 +409,92 @@ def convert_schedule_record(item):
             item.get("NO_GATE"),
 
         "eta":
-            parse_api_datetime(item.get("ETA")),
+            parse_api_datetime(
+                item.get("ETA")
+            ),
 
         "et_berthing":
-            parse_api_datetime(item.get("ET_BERTHING")),
+            parse_api_datetime(
+                item.get("ET_BERTHING")
+            ),
 
         "et_boarding":
-            parse_api_datetime(item.get("ET_BOARDING")),
+            parse_api_datetime(
+                item.get("ET_BOARDING")
+            ),
 
         "etd":
-            parse_api_datetime(item.get("ETD")),
+            parse_api_datetime(
+                item.get("ETD")
+            ),
 
         "open_date":
-            parse_api_datetime(item.get("OPEN_DATE")),
+            parse_api_datetime(
+                item.get("OPEN_DATE")
+            ),
 
         "closing_date":
-            parse_api_datetime(item.get("CLOSING_DATE")),
+            parse_api_datetime(
+                item.get("CLOSING_DATE")
+            ),
 
         "is_open_checkin":
-            parse_bool(item.get("IS_OPEN_CHECKIN")),
+            parse_bool(
+                item.get("IS_OPEN_CHECKIN")
+            ),
 
         "is_open_gate":
-            parse_bool(item.get("IS_OPEN_GATE")),
+            parse_bool(
+                item.get("IS_OPEN_GATE")
+            ),
 
         "first_line":
-            parse_api_datetime(item.get("FIRST_LINE")),
+            parse_api_datetime(
+                item.get("FIRST_LINE")
+            ),
 
         "at_start_act":
-            parse_api_datetime(item.get("AT_START_ACT")),
+            parse_api_datetime(
+                item.get("AT_START_ACT")
+            ),
 
         "at_start_debarkasi":
             parse_api_datetime(
-                item.get("AT_START_DEBARKASI")
+                item.get(
+                    "AT_START_DEBARKASI"
+                )
             ),
 
         "at_end_debarkasi":
             parse_api_datetime(
-                item.get("AT_END_DEBARKASI")
+                item.get(
+                    "AT_END_DEBARKASI"
+                )
             ),
 
         "at_start_embarkasi":
             parse_api_datetime(
-                item.get("AT_START_EMBARKASI")
+                item.get(
+                    "AT_START_EMBARKASI"
+                )
             ),
 
         "at_end_embarkasi":
             parse_api_datetime(
-                item.get("AT_END_EMBARKASI")
+                item.get(
+                    "AT_END_EMBARKASI"
+                )
             ),
 
         "at_end_act":
-            parse_api_datetime(item.get("AT_END_ACT")),
+            parse_api_datetime(
+                item.get("AT_END_ACT")
+            ),
 
         "last_line":
-            parse_api_datetime(item.get("LAST_LINE")),
+            parse_api_datetime(
+                item.get("LAST_LINE")
+            ),
 
         "ves_stat":
             item.get("VES_STAT"),
@@ -418,16 +503,22 @@ def convert_schedule_record(item):
             item.get("REC_STAT"),
 
         "status_kirim_manifest":
-            item.get("STATUS_KIRIM_MANIFEST"),
+            item.get(
+                "STATUS_KIRIM_MANIFEST"
+            ),
 
         "sts_go":
             item.get("STS_GO"),
 
         "vesops_status":
-            item.get("VESOPS_STATUS"),
+            item.get(
+                "VESOPS_STATUS"
+            ),
 
         "onschedule_status":
-            item.get("ONSCHEDULE_STATUS"),
+            item.get(
+                "ONSCHEDULE_STATUS"
+            ),
 
         "no_pkk":
             item.get("NO_PKK"),
@@ -436,81 +527,291 @@ def convert_schedule_record(item):
             "API",
 
         "raw_data":
-            item,
+            json_safe(item),
 
         "api_created_date":
-            parse_api_datetime(item.get("CREATED_DATE")),
+            parse_api_datetime(
+                item.get("CREATED_DATE")
+            ),
 
         "api_created_by":
             item.get("CREATED_BY"),
 
         "api_last_updated_date":
             parse_api_datetime(
-                item.get("LAST_UPDATED_DATE")
+                item.get(
+                    "LAST_UPDATED_DATE"
+                )
             ),
 
         "api_last_updated_by":
-            item.get("LAST_UPDATED_BY"),
+            item.get(
+                "LAST_UPDATED_BY"
+            ),
 
         "program_name":
-            item.get("PROGRAM_NAME")
+            item.get(
+                "PROGRAM_NAME"
+            )
     }
 
+    return json_safe(record)
+
 
 # ============================================================
-# UPSERT SCHEDULE
+# GET EXISTING RECORD
 # ============================================================
 
-def save_schedule_to_supabase(api_data):
+def get_existing_schedule(kd_jadwal):
 
-    saved = 0
+    if not kd_jadwal:
+
+        return None
+
+    try:
+
+        result = (
+            supabase
+            .table("schedule_voyages")
+            .select("*")
+            .eq(
+                "kd_jadwal",
+                kd_jadwal
+            )
+            .limit(1)
+            .execute()
+        )
+
+        if result.data:
+
+            return result.data[0]
+
+    except Exception:
+
+        pass
+
+    return None
+
+
+# ============================================================
+# DETECT CHANGES
+# ============================================================
+
+def detect_changes(
+    old,
+    new
+):
+
+    changes = []
+
+    fields = [
+
+        (
+            "nama_kapal",
+            "Nama Kapal"
+        ),
+
+        (
+            "voyage_no",
+            "Voyage"
+        ),
+
+        (
+            "nm_port_asal",
+            "Pelabuhan Asal"
+        ),
+
+        (
+            "nm_port_dest",
+            "Pelabuhan Tujuan"
+        ),
+
+        (
+            "nm_dermaga",
+            "Dermaga"
+        ),
+
+        (
+            "eta",
+            "ETA"
+        ),
+
+        (
+            "etd",
+            "ETD"
+        ),
+
+        (
+            "vesops_status",
+            "Status"
+        ),
+
+        (
+            "is_open_checkin",
+            "Open Check-in"
+        ),
+
+        (
+            "is_open_gate",
+            "Open Gate"
+        )
+    ]
+
+    for field, label in fields:
+
+        old_value = old.get(field)
+        new_value = new.get(field)
+
+        # Convert datetime/string agar
+        # perbandingan konsisten
+
+        old_value = (
+            str(old_value)
+            if old_value is not None
+            else None
+        )
+
+        new_value = (
+            str(new_value)
+            if new_value is not None
+            else None
+        )
+
+        if old_value != new_value:
+
+            changes.append({
+
+                "field":
+                    label,
+
+                "old":
+                    old_value or "-",
+
+                "new":
+                    new_value or "-"
+            })
+
+    return changes
+
+
+# ============================================================
+# SAVE / UPDATE SCHEDULE
+# ============================================================
+
+def save_schedule_to_supabase(
+    api_data,
+    detect_change=True
+):
+
+    inserted = 0
+    updated = 0
+
+    new_vessels = []
+    changed_vessels = []
+
     errors = []
 
     for item in api_data:
 
-        record = convert_schedule_record(item)
-
-        # ----------------------------------------------------
-        # Data minimal
-        # ----------------------------------------------------
-
-        if not record["nama_kapal"]:
-            continue
-
         try:
 
-            # ------------------------------------------------
-            # Gunakan KD_JADWAL sebagai identitas jika ada
-            # ------------------------------------------------
+            record = (
+                convert_schedule_record(
+                    item
+                )
+            )
 
-            existing = None
+            nama_kapal = (
+                record.get(
+                    "nama_kapal"
+                )
+            )
 
-            if record["kd_jadwal"]:
+            kd_jadwal = (
+                record.get(
+                    "kd_jadwal"
+                )
+            )
 
-                result = (
-                    supabase
-                    .table("schedule_voyages")
-                    .select("id")
-                    .eq(
-                        "kd_jadwal",
-                        record["kd_jadwal"]
-                    )
-                    .limit(1)
-                    .execute()
+            if not nama_kapal:
+
+                continue
+
+            if not kd_jadwal:
+
+                errors.append(
+                    f"{nama_kapal}: "
+                    "KD_JADWAL kosong."
                 )
 
-                if result.data:
-                    existing = result.data[0]
+                continue
 
-            # ------------------------------------------------
-            # Update
-            # ------------------------------------------------
+            # =================================================
+            # Existing
+            # =================================================
 
-            if existing:
+            existing = (
+                get_existing_schedule(
+                    kd_jadwal
+                )
+            )
+
+            # =================================================
+            # NEW
+            # =================================================
+
+            if not existing:
 
                 (
                     supabase
-                    .table("schedule_voyages")
+                    .table(
+                        "schedule_voyages"
+                    )
+                    .insert(record)
+                    .execute()
+                )
+
+                inserted += 1
+
+                new_vessels.append({
+
+                    "kd_jadwal":
+                        kd_jadwal,
+
+                    "nama_kapal":
+                        nama_kapal,
+
+                    "voyage_no":
+                        record.get(
+                            "voyage_no"
+                        ),
+
+                    "dermaga":
+                        record.get(
+                            "nm_dermaga"
+                        )
+                })
+
+            # =================================================
+            # EXISTING
+            # =================================================
+
+            else:
+
+                changes = []
+
+                if detect_change:
+
+                    changes = detect_changes(
+                        existing,
+                        record
+                    )
+
+                (
+                    supabase
+                    .table(
+                        "schedule_voyages"
+                    )
                     .update(record)
                     .eq(
                         "id",
@@ -519,68 +820,235 @@ def save_schedule_to_supabase(api_data):
                     .execute()
                 )
 
-            # ------------------------------------------------
-            # Insert
-            # ------------------------------------------------
+                updated += 1
 
-            else:
+                if changes:
 
-                (
-                    supabase
-                    .table("schedule_voyages")
-                    .insert(record)
-                    .execute()
-                )
+                    changed_vessels.append({
 
-            saved += 1
+                        "id":
+                            existing["id"],
+
+                        "kd_jadwal":
+                            kd_jadwal,
+
+                        "nama_kapal":
+                            nama_kapal,
+
+                        "changes":
+                            changes
+                    })
 
         except Exception as e:
 
             errors.append(
-                f"{record['nama_kapal']}: {str(e)}"
+                f"{item.get('NAMA_KAPAL', '-')}: "
+                f"{str(e)}"
             )
 
-    return saved, errors
+    return {
+
+        "inserted":
+            inserted,
+
+        "updated":
+            updated,
+
+        "new_vessels":
+            new_vessels,
+
+        "changed_vessels":
+            changed_vessels,
+
+        "errors":
+            errors
+    }
 
 
 # ============================================================
-# LOAD SCHEDULE DATABASE
+# PERFORM SYNC
 # ============================================================
 
-def get_schedule_database():
+def perform_schedule_sync(
+    initial=False
+):
+
+    api_data, api_error = (
+        get_schedule_from_api()
+    )
+
+    if api_error:
+
+        return {
+
+            "success":
+                False,
+
+            "message":
+                api_error,
+
+            "result":
+                None
+        }
+
+    result = (
+        save_schedule_to_supabase(
+            api_data,
+            detect_change=not initial
+        )
+    )
+
+    sync_time = datetime.now(
+        timezone.utc
+    )
+
+    st.session_state.last_sync_time = (
+        sync_time
+    )
+
+    response = {
+
+        "success":
+            True,
+
+        "message":
+            "Sinkronisasi berhasil.",
+
+        "result":
+            result,
+
+        "sync_time":
+            sync_time,
+
+        "total_api":
+            len(api_data)
+    }
+
+    st.session_state.last_sync_result = (
+        response
+    )
+
+    return response
+
+
+# ============================================================
+# LOGIN
+# ============================================================
+
+def login(
+    email,
+    password
+):
 
     try:
 
-        result = (
+        response = (
             supabase
-            .table("schedule_voyages")
-            .select("*")
-            .order(
-                "eta",
-                desc=False
+            .auth
+            .sign_in_with_password({
+                "email":
+                    email,
+
+                "password":
+                    password
+            })
+        )
+
+        if not response.session:
+
+            return (
+                False,
+                "Session login tidak ditemukan."
             )
-            .limit(200)
+
+        # ====================================================
+        # Ambil profile
+        # ====================================================
+
+        profile_response = (
+            supabase
+            .rpc(
+                "get_my_profile"
+            )
             .execute()
         )
 
-        return result.data or [], None
+        if not profile_response.data:
+
+            supabase.auth.sign_out()
+
+            return (
+                False,
+                "Profile user tidak ditemukan."
+            )
+
+        profile = (
+            profile_response.data[0]
+        )
+
+        if profile.get(
+            "status"
+        ) != "ACTIVE":
+
+            supabase.auth.sign_out()
+
+            return (
+                False,
+                "Akun tidak aktif."
+            )
+
+        st.session_state.profile = (
+            profile
+        )
+
+        return (
+            True,
+            "Login berhasil."
+        )
 
     except Exception as e:
 
-        return [], str(e)
+        return (
+            False,
+            str(e)
+        )
 
 
 # ============================================================
-# GET TRANSACTION NUMBER
+# LOGOUT
+# ============================================================
+
+def logout():
+
+    try:
+
+        supabase.auth.sign_out()
+
+    except Exception:
+
+        pass
+
+    st.session_state.clear()
+
+    st.rerun()
+
+
+# ============================================================
+# TRANSACTION NUMBER
 # ============================================================
 
 def generate_transaction_number():
 
-    result = supabase.rpc(
-        "generate_transaction_no"
-    ).execute()
+    result = (
+        supabase
+        .rpc(
+            "generate_transaction_no"
+        )
+        .execute()
+    )
 
     if result.data:
+
         return result.data
 
     raise Exception(
@@ -589,7 +1057,7 @@ def generate_transaction_number():
 
 
 # ============================================================
-# CHECK DUPLICATE QR
+# DUPLICATE QR
 # ============================================================
 
 def check_duplicate_qr(
@@ -599,9 +1067,11 @@ def check_duplicate_qr(
 
     result = (
         supabase
-        .table("weighing_transactions")
+        .table(
+            "weighing_transactions"
+        )
         .select(
-            "id, transaction_no, status"
+            "id,transaction_no,status"
         )
         .eq(
             "schedule_voyage_id",
@@ -619,11 +1089,13 @@ def check_duplicate_qr(
         .execute()
     )
 
-    return result.data or []
+    return (
+        result.data or []
+    )
 
 
 # ============================================================
-# SAVE WEIGHING TRANSACTION
+# SAVE TRANSACTION
 # ============================================================
 
 def save_transaction(
@@ -636,47 +1108,37 @@ def save_transaction(
 
     try:
 
-        schedule_id = vessel["id"]
+        schedule_id = (
+            vessel["id"]
+        )
 
-        # ----------------------------------------------------
-        # Duplicate QR
-        # ----------------------------------------------------
-
-        duplicate = check_duplicate_qr(
-            schedule_id,
-            qr_ticket
+        duplicate = (
+            check_duplicate_qr(
+                schedule_id,
+                qr_ticket
+            )
         )
 
         if duplicate:
 
             return (
                 False,
-                "QR tiket sudah digunakan pada "
-                "kegiatan kapal ini.",
+                "QR tiket sudah digunakan "
+                "pada kegiatan kapal ini.",
                 None
             )
-
-        # ----------------------------------------------------
-        # Transaction number
-        # ----------------------------------------------------
 
         transaction_no = (
             generate_transaction_number()
         )
 
-        # ----------------------------------------------------
-        # Source
-        # ----------------------------------------------------
-
-        transaction_source = (
+        source = (
             "MANUAL"
-            if vessel.get("source") == "MANUAL"
+            if vessel.get(
+                "source"
+            ) == "MANUAL"
             else "API"
         )
-
-        # ----------------------------------------------------
-        # Data transaction
-        # ----------------------------------------------------
 
         record = {
 
@@ -696,16 +1158,20 @@ def save_transaction(
                 float(bruto),
 
             "destination_berth_code":
-                vessel.get("kd_dermaga"),
+                vessel.get(
+                    "kd_dermaga"
+                ),
 
             "destination_berth_name":
-                vessel.get("nm_dermaga"),
+                vessel.get(
+                    "nm_dermaga"
+                ),
 
             "operator_user_id":
                 profile["id"],
 
             "transaction_source":
-                transaction_source,
+                source,
 
             "status":
                 "COMPLETED",
@@ -716,13 +1182,11 @@ def save_transaction(
                 ).isoformat()
         }
 
-        # ----------------------------------------------------
-        # INSERT
-        # ----------------------------------------------------
-
         result = (
             supabase
-            .table("weighing_transactions")
+            .table(
+                "weighing_transactions"
+            )
             .insert(record)
             .execute()
         )
@@ -751,22 +1215,21 @@ def save_transaction(
 
 
 # ============================================================
-# LOGIN SCREEN
+# LOGIN PAGE
 # ============================================================
 
 if st.session_state.profile is None:
 
     st.markdown(
-        '<div class="main-title">'
-        '⚓ Manual RORO'
-        '</div>',
-        unsafe_allow_html=True
-    )
+        """
+        <div class="main-title">
+        ⚓ Manual RORO
+        </div>
 
-    st.markdown(
-        '<div class="sub-title">'
-        'Sistem Input Kendaraan Pelabuhan'
-        '</div>',
+        <div class="sub-title">
+        Sistem Input Kendaraan Pelabuhan
+        </div>
+        """,
         unsafe_allow_html=True
     )
 
@@ -809,9 +1272,11 @@ if st.session_state.profile is None:
                     "Login..."
                 ):
 
-                    success, message = login(
-                        email,
-                        password
+                    success, message = (
+                        login(
+                            email,
+                            password
+                        )
                     )
 
                 if success:
@@ -820,7 +1285,9 @@ if st.session_state.profile is None:
 
                 else:
 
-                    st.error(message)
+                    st.error(
+                        message
+                    )
 
     st.stop()
 
@@ -829,7 +1296,80 @@ if st.session_state.profile is None:
 # PROFILE
 # ============================================================
 
-profile = st.session_state.profile
+profile = (
+    st.session_state.profile
+)
+
+
+# ============================================================
+# INITIAL SYNC
+# ============================================================
+
+if not st.session_state.initial_sync_done:
+
+    with st.spinner(
+        "Mengambil jadwal kapal terbaru..."
+    ):
+
+        result = perform_schedule_sync(
+            initial=True
+        )
+
+    st.session_state.initial_sync_done = (
+        True
+    )
+
+    st.session_state.last_sync_result = (
+        result
+    )
+
+    if not result["success"]:
+
+        st.warning(
+            "⚠️ API ScheduleBoard tidak dapat "
+            "diakses. Data lokal tetap dapat digunakan."
+        )
+
+
+# ============================================================
+# AUTO SYNC DETECTION
+# ============================================================
+
+current_result = (
+    st.session_state.last_sync_result
+)
+
+# Streamlit rerun akan terjadi setiap 10 menit.
+# Kita sync ulang jika sudah lebih dari 10 menit.
+
+should_sync = False
+
+if st.session_state.last_sync_time:
+
+    elapsed = (
+        datetime.now(
+            timezone.utc
+        )
+        -
+        st.session_state.last_sync_time
+    ).total_seconds()
+
+    if elapsed >= (
+        AUTO_SYNC_MINUTES * 60
+    ):
+
+        should_sync = True
+
+
+if should_sync:
+
+    result = perform_schedule_sync(
+        initial=False
+    )
+
+    st.session_state.last_sync_result = (
+        result
+    )
 
 
 # ============================================================
@@ -849,7 +1389,7 @@ with st.sidebar:
     st.divider()
 
     st.write(
-        f"**{profile.get('name', '-') }**"
+        f"**{profile.get('name', '-')}"
     )
 
     st.caption(
@@ -875,6 +1415,56 @@ with st.sidebar:
 
     st.divider()
 
+    # ========================================================
+    # SYNC STATUS
+    # ========================================================
+
+    if st.session_state.last_sync_time:
+
+        sync_display = (
+            st.session_state
+            .last_sync_time
+            .astimezone()
+            .strftime(
+                "%d-%m-%Y %H:%M:%S"
+            )
+        )
+
+        st.caption(
+            "Sinkron terakhir:"
+        )
+
+        st.caption(
+            sync_display
+        )
+
+    st.caption(
+        f"Auto sync: {AUTO_SYNC_MINUTES} menit"
+    )
+
+    st.divider()
+
+    if st.button(
+        "🔄 Sinkron Sekarang",
+        use_container_width=True
+    ):
+
+        with st.spinner(
+            "Sinkronisasi..."
+        ):
+
+            result = (
+                perform_schedule_sync(
+                    initial=False
+                )
+            )
+
+        st.session_state.last_sync_result = (
+            result
+        )
+
+        st.rerun()
+
     if st.button(
         "Keluar",
         use_container_width=True
@@ -884,36 +1474,214 @@ with st.sidebar:
 
 
 # ============================================================
+# NOTIFICATION
+# ============================================================
+
+sync_result = (
+    st.session_state.last_sync_result
+)
+
+if sync_result:
+
+    result_data = (
+        sync_result.get(
+            "result"
+        )
+        or {}
+    )
+
+    new_vessels = (
+        result_data.get(
+            "new_vessels",
+            []
+        )
+    )
+
+    changed_vessels = (
+        result_data.get(
+            "changed_vessels",
+            []
+        )
+    )
+
+    errors = (
+        result_data.get(
+            "errors",
+            []
+        )
+    )
+
+    # ========================================================
+    # NEW
+    # ========================================================
+
+    if new_vessels:
+
+        st.warning(
+            f"🔔 {len(new_vessels)} "
+            "jadwal kapal baru ditemukan."
+        )
+
+        with st.expander(
+            "Lihat jadwal kapal baru",
+            expanded=True
+        ):
+
+            for vessel in new_vessels:
+
+                st.markdown(
+                    f"""
+                    <div class="new-vessel">
+
+                    🚢 <b>
+                    {vessel.get("nama_kapal", "-")}
+                    </b>
+
+                    <br>
+
+                    Voyage:
+                    {vessel.get("voyage_no", "-")}
+
+                    <br>
+
+                    Dermaga:
+                    {vessel.get("dermaga", "-")}
+
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+            if st.button(
+                "🔄 SINKRON SEKARANG",
+                type="primary"
+            ):
+
+                with st.spinner(
+                    "Sinkronisasi ulang..."
+                ):
+
+                    fresh_result = (
+                        perform_schedule_sync(
+                            initial=False
+                        )
+                    )
+
+                st.session_state.last_sync_result = (
+                    fresh_result
+                )
+
+                st.rerun()
+
+    # ========================================================
+    # CHANGED
+    # ========================================================
+
+    if changed_vessels:
+
+        st.info(
+            f"🔵 Ada {len(changed_vessels)} "
+            "jadwal kapal yang berubah."
+        )
+
+        with st.expander(
+            "Lihat perubahan jadwal"
+        ):
+
+            for vessel in changed_vessels:
+
+                st.markdown(
+                    f"""
+                    <div class="changed-vessel">
+
+                    🚢 <b>
+                    {vessel.get("nama_kapal", "-")}
+                    </b>
+
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+                for change in vessel.get(
+                    "changes",
+                    []
+                ):
+
+                    st.write(
+                        f"**{change['field']}**"
+                    )
+
+                    st.write(
+                        f"{change['old']} "
+                        f"→ "
+                        f"{change['new']}"
+                    )
+
+    # ========================================================
+    # ERRORS
+    # ========================================================
+
+    if errors:
+
+        with st.expander(
+            f"⚠️ {len(errors)} data gagal diproses"
+        ):
+
+            for error in errors:
+
+                st.error(error)
+
+
+# ============================================================
 # DASHBOARD
 # ============================================================
 
 if menu == "🏠 Dashboard":
 
     st.markdown(
-        '<div class="main-title">'
-        'Dashboard'
-        '</div>',
+        """
+        <div class="main-title">
+        Dashboard
+        </div>
+
+        <div class="sub-title">
+        Monitoring Manual RORO
+        </div>
+        """,
         unsafe_allow_html=True
     )
-
-    st.markdown(
-        '<div class="sub-title">'
-        'Monitoring Manual RORO'
-        '</div>',
-        unsafe_allow_html=True
-    )
-
-    # --------------------------------------------------------
-    # Get transaction statistics
-    # --------------------------------------------------------
 
     try:
 
-        transaction_result = (
+        schedule_result = (
             supabase
-            .table("weighing_transactions")
+            .table(
+                "schedule_voyages"
+            )
             .select(
-                "id, bruto_kg, status"
+                "id"
+            )
+            .execute()
+        )
+
+        total_schedule = len(
+            schedule_result.data or []
+        )
+
+    except Exception:
+
+        total_schedule = 0
+
+    try:
+
+        trx_result = (
+            supabase
+            .table(
+                "weighing_transactions"
+            )
+            .select(
+                "id,bruto_kg"
             )
             .eq(
                 "status",
@@ -923,24 +1691,25 @@ if menu == "🏠 Dashboard":
         )
 
         transactions = (
-            transaction_result.data or []
+            trx_result.data or []
         )
 
     except Exception:
 
         transactions = []
 
-    total_transactions = len(
+    total_transaction = len(
         transactions
     )
 
     total_bruto = sum(
-        float(x["bruto_kg"])
-        for x in transactions
-    )
-
-    schedule_data, schedule_error = (
-        get_schedule_database()
+        float(
+            row.get(
+                "bruto_kg",
+                0
+            )
+        )
+        for row in transactions
     )
 
     col1, col2, col3 = st.columns(3)
@@ -949,14 +1718,14 @@ if menu == "🏠 Dashboard":
 
         st.metric(
             "Kegiatan Kapal",
-            len(schedule_data)
+            total_schedule
         )
 
     with col2:
 
         st.metric(
             "Total Transaksi",
-            total_transactions
+            total_transaction
         )
 
     with col3:
@@ -968,9 +1737,67 @@ if menu == "🏠 Dashboard":
 
     st.divider()
 
+    # ========================================================
+    # SYNC CARD
+    # ========================================================
+
+    st.markdown(
+        "### Status ScheduleBoard"
+    )
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        st.markdown(
+            """
+            <div class="sync-card">
+
+            🟢 <b>ScheduleBoard API</b>
+
+            <br><br>
+
+            Auto synchronization:
+            <b>10 menit</b>
+
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    with col2:
+
+        if st.session_state.last_sync_time:
+
+            sync_time = (
+                st.session_state
+                .last_sync_time
+                .astimezone()
+                .strftime(
+                    "%d-%m-%Y %H:%M:%S"
+                )
+            )
+
+            st.markdown(
+                f"""
+                <div class="sync-card">
+
+                🕒 <b>Sinkronisasi terakhir</b>
+
+                <br><br>
+
+                {sync_time}
+
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+    st.divider()
+
     st.info(
-        "Gunakan **Input Kendaraan** untuk "
-        "mencatat kendaraan masuk pelabuhan."
+        "Gunakan menu **Input Kendaraan** "
+        "untuk melakukan pencatatan kendaraan."
     )
 
 
@@ -981,88 +1808,73 @@ if menu == "🏠 Dashboard":
 elif menu == "🚢 Kegiatan Kapal":
 
     st.markdown(
-        '<div class="main-title">'
-        'Kegiatan Kapal'
-        '</div>',
+        """
+        <div class="main-title">
+        Kegiatan Kapal
+        </div>
+
+        <div class="sub-title">
+        Data ScheduleBoard
+        </div>
+        """,
         unsafe_allow_html=True
     )
 
-    st.markdown(
-        '<div class="sub-title">'
-        'Data kapal dari ScheduleBoard'
-        '</div>',
-        unsafe_allow_html=True
-    )
-
-    col1, col2 = st.columns(
-        [1, 3]
-    )
-
-    with col1:
-
-        refresh = st.button(
-            "🔄 Sinkronisasi API",
-            type="primary",
-            use_container_width=True
-        )
-
-    if refresh:
+    if st.button(
+        "🔄 Sinkron Sekarang",
+        type="primary"
+    ):
 
         with st.spinner(
-            "Mengambil data ScheduleBoard..."
+            "Mengambil data API..."
         ):
 
-            api_data, api_error = (
-                get_schedule_from_api()
-            )
-
-        if api_error:
-
-            st.error(api_error)
-
-        else:
-
-            with st.spinner(
-                "Menyimpan ke Supabase..."
-            ):
-
-                saved, errors = (
-                    save_schedule_to_supabase(
-                        api_data
-                    )
+            result = (
+                perform_schedule_sync(
+                    initial=False
                 )
-
-            st.success(
-                f"{saved} kegiatan kapal "
-                f"berhasil disinkronkan."
             )
 
-            if errors:
+        st.session_state.last_sync_result = (
+            result
+        )
 
-                with st.expander(
-                    "Lihat error"
-                ):
-
-                    for error in errors:
-
-                        st.write(
-                            error
-                        )
+        st.rerun()
 
     st.divider()
 
-    schedule_data, error = (
-        get_schedule_database()
-    )
+    try:
 
-    if error:
+        schedule_result = (
+            supabase
+            .table(
+                "schedule_voyages"
+            )
+            .select("*")
+            .order(
+                "eta",
+                desc=False
+            )
+            .limit(300)
+            .execute()
+        )
 
-        st.error(error)
+        schedule_data = (
+            schedule_result.data or []
+        )
 
-    elif not schedule_data:
+    except Exception as e:
+
+        st.error(
+            f"Gagal mengambil jadwal: {e}"
+        )
+
+        schedule_data = []
+
+    if not schedule_data:
 
         st.info(
-            "Belum ada data kegiatan kapal."
+            "Belum ada jadwal kapal."
         )
 
     else:
@@ -1073,152 +1885,71 @@ elif menu == "🚢 Kegiatan Kapal":
                 border=True
             ):
 
-                col1, col2, col3 = st.columns(
-                    [2, 2, 1]
+                col1, col2, col3 = (
+                    st.columns(
+                        [2, 2, 1]
+                    )
                 )
 
                 with col1:
 
                     st.markdown(
-                        f"### 🚢 "
-                        f"{vessel.get('nama_kapal', '-')}"
+                        f"""
+                        ### 🚢
+                        {vessel.get(
+                            "nama_kapal",
+                            "-"
+                        )}
+                        """
                     )
 
                     st.caption(
                         f"Voyage: "
-                        f"{vessel.get('voyage_no', '-')}"
+                        f"{vessel.get(
+                            'voyage_no',
+                            '-'
+                        )}"
                     )
 
                 with col2:
 
                     st.write(
                         f"**Rute:** "
-                        f"{vessel.get('nm_port_asal', '-')}"
+                        f"{vessel.get(
+                            'nm_port_asal',
+                            '-'
+                        )}"
                         f" → "
-                        f"{vessel.get('nm_port_dest', '-')}"
+                        f"{vessel.get(
+                            'nm_port_dest',
+                            '-'
+                        )}"
                     )
 
                     st.write(
                         f"**Dermaga:** "
-                        f"{vessel.get('nm_dermaga', '-')}"
+                        f"{vessel.get(
+                            'nm_dermaga',
+                            '-'
+                        )}"
                     )
 
                 with col3:
 
                     st.write(
                         f"**Source:** "
-                        f"{vessel.get('source', '-')}"
+                        f"{vessel.get(
+                            'source',
+                            '-'
+                        )}"
                     )
 
                     st.write(
                         f"**Status:** "
-                        f"{vessel.get('vesops_status', '-')}"
-                    )
-
-
-    st.divider()
-
-    st.subheader(
-        "⚠️ Input Kapal Manual"
-    )
-
-    st.caption(
-        "Gunakan apabila data kapal dari API "
-        "tidak tersedia."
-    )
-
-    with st.expander(
-        "Tambah Kegiatan Kapal Manual"
-    ):
-
-        manual_name = st.text_input(
-            "Nama Kapal",
-            key="manual_name"
-        )
-
-        manual_voyage = st.text_input(
-            "Voyage",
-            key="manual_voyage"
-        )
-
-        manual_origin = st.text_input(
-            "Pelabuhan Asal",
-            key="manual_origin"
-        )
-
-        manual_destination = st.text_input(
-            "Pelabuhan Tujuan",
-            key="manual_destination"
-        )
-
-        manual_berth = st.text_input(
-            "Dermaga",
-            key="manual_berth"
-        )
-
-        if st.button(
-            "Simpan Kapal Manual",
-            type="primary"
-        ):
-
-            if not manual_name:
-
-                st.error(
-                    "Nama kapal wajib diisi."
-                )
-
-            else:
-
-                try:
-
-                    manual_record = {
-
-                        "nama_kapal":
-                            manual_name,
-
-                        "voyage_no":
-                            manual_voyage,
-
-                        "nm_port_asal":
-                            manual_origin,
-
-                        "nm_port_dest":
-                            manual_destination,
-
-                        "nm_dermaga":
-                            manual_berth,
-
-                        "source":
-                            "MANUAL",
-
-                        "raw_data":
-                            None
-                    }
-
-                    result = (
-                        supabase
-                        .table(
-                            "schedule_voyages"
-                        )
-                        .insert(
-                            manual_record
-                        )
-                        .execute()
-                    )
-
-                    if result.data:
-
-                        st.success(
-                            "Kapal manual berhasil "
-                            "disimpan."
-                        )
-
-                        st.rerun()
-
-                except Exception as e:
-
-                    st.error(
-                        f"Gagal menyimpan: {e}"
+                        f"{vessel.get(
+                            'vesops_status',
+                            '-'
+                        )}"
                     )
 
 
@@ -1229,30 +1960,44 @@ elif menu == "🚢 Kegiatan Kapal":
 elif menu == "🚛 Input Kendaraan":
 
     st.markdown(
-        '<div class="main-title">'
-        'Input Kendaraan'
-        '</div>',
+        """
+        <div class="main-title">
+        Input Kendaraan
+        </div>
+
+        <div class="sub-title">
+        Pencatatan kendaraan masuk pelabuhan
+        </div>
+        """,
         unsafe_allow_html=True
     )
 
-    st.markdown(
-        '<div class="sub-title">'
-        'Pencatatan kendaraan masuk pelabuhan'
-        '</div>',
-        unsafe_allow_html=True
-    )
+    try:
 
-    # --------------------------------------------------------
-    # LOAD VESSELS
-    # --------------------------------------------------------
+        result = (
+            supabase
+            .table(
+                "schedule_voyages"
+            )
+            .select("*")
+            .order(
+                "eta",
+                desc=False
+            )
+            .limit(300)
+            .execute()
+        )
 
-    schedule_data, error = (
-        get_schedule_database()
-    )
+        schedule_data = (
+            result.data or []
+        )
 
-    if error:
+    except Exception as e:
 
-        st.error(error)
+        st.error(
+            str(e)
+        )
+
         st.stop()
 
     if not schedule_data:
@@ -1261,16 +2006,11 @@ elif menu == "🚛 Input Kendaraan":
             "Belum ada kegiatan kapal."
         )
 
-        st.info(
-            "Buka menu Kegiatan Kapal "
-            "kemudian klik Sinkronisasi API."
-        )
-
         st.stop()
 
-    # --------------------------------------------------------
-    # SELECT VESSEL
-    # --------------------------------------------------------
+    # ========================================================
+    # VESSEL
+    # ========================================================
 
     st.markdown(
         "### 1️⃣ Kegiatan Kapal"
@@ -1290,18 +2030,14 @@ elif menu == "🚛 Input Kendaraan":
 
         vessel_map[label] = vessel
 
-    selected_label = st.selectbox(
+    selected = st.selectbox(
         "Pilih kegiatan kapal",
-        list(vessel_map.keys())
+        list(
+            vessel_map.keys()
+        )
     )
 
-    vessel = vessel_map[
-        selected_label
-    ]
-
-    # --------------------------------------------------------
-    # VESSEL CARD
-    # --------------------------------------------------------
+    vessel = vessel_map[selected]
 
     st.markdown(
         f"""
@@ -1330,16 +2066,6 @@ elif menu == "🚛 Input Kendaraan":
 
         <br>
 
-        <b>ETA:</b>
-        {vessel.get("eta", "-")}
-
-        &nbsp;&nbsp;
-
-        <b>ETD:</b>
-        {vessel.get("etd", "-")}
-
-        <br>
-
         <b>Source:</b>
         {vessel.get("source", "-")}
 
@@ -1350,9 +2076,9 @@ elif menu == "🚛 Input Kendaraan":
         unsafe_allow_html=True
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # QR
-    # --------------------------------------------------------
+    # ========================================================
 
     st.markdown(
         "### 2️⃣ QR Tiket"
@@ -1361,21 +2087,20 @@ elif menu == "🚛 Input Kendaraan":
     qr_ticket = st.text_input(
         "Scan QR tiket",
         placeholder=(
-            "Arahkan scanner QR ke kolom ini..."
-        ),
-        key="qr_ticket"
+            "Scan QR menggunakan scanner..."
+        )
     )
 
-    # --------------------------------------------------------
-    # VEHICLE GROUP
-    # --------------------------------------------------------
+    # ========================================================
+    # GROUP
+    # ========================================================
 
     st.markdown(
         "### 3️⃣ Golongan Kendaraan"
     )
 
     vehicle_group = st.radio(
-        "Pilih golongan",
+        "Golongan",
         [
             "1",
             "2",
@@ -1387,9 +2112,9 @@ elif menu == "🚛 Input Kendaraan":
         horizontal=True
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # BRUTO
-    # --------------------------------------------------------
+    # ========================================================
 
     st.markdown(
         "### 4️⃣ Berat Bruto"
@@ -1399,62 +2124,10 @@ elif menu == "🚛 Input Kendaraan":
         "Bruto (Kg)",
         min_value=0.0,
         step=10.0,
-        format="%.2f",
-        key="bruto"
-    )
-
-    st.caption(
-        "Masukkan berat bruto hasil timbangan."
+        format="%.2f"
     )
 
     st.divider()
-
-    # --------------------------------------------------------
-    # SUMMARY
-    # --------------------------------------------------------
-
-    st.markdown(
-        "### Ringkasan Transaksi"
-    )
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-
-        st.write(
-            "**Kapal**"
-        )
-
-        st.write(
-            vessel.get(
-                "nama_kapal",
-                "-"
-            )
-        )
-
-    with col2:
-
-        st.write(
-            "**Golongan**"
-        )
-
-        st.write(
-            f"Golongan {vehicle_group}"
-        )
-
-    with col3:
-
-        st.write(
-            "**Bruto**"
-        )
-
-        st.write(
-            f"{bruto:,.2f} Kg"
-        )
-
-    # --------------------------------------------------------
-    # SAVE
-    # --------------------------------------------------------
 
     if st.button(
         "💾 SIMPAN TRANSAKSI",
@@ -1473,13 +2146,7 @@ elif menu == "🚛 Input Kendaraan":
         if bruto <= 0:
 
             errors.append(
-                "Berat bruto harus lebih dari 0 Kg."
-            )
-
-        if not vessel.get("id"):
-
-            errors.append(
-                "ID kegiatan kapal tidak ditemukan."
+                "Bruto harus lebih dari 0 Kg."
             )
 
         if errors:
@@ -1494,7 +2161,7 @@ elif menu == "🚛 Input Kendaraan":
                 "Menyimpan transaksi..."
             ):
 
-                success, message, transaction = (
+                success, message, trx = (
                     save_transaction(
                         vessel,
                         qr_ticket,
@@ -1505,10 +2172,6 @@ elif menu == "🚛 Input Kendaraan":
                 )
 
             if success:
-
-                st.session_state.last_transaction = (
-                    transaction
-                )
 
                 st.success(
                     "Transaksi berhasil disimpan."
@@ -1523,13 +2186,16 @@ elif menu == "🚛 Input Kendaraan":
                     </div>
 
                     <div class="transaction-number">
-                    {transaction["transaction_no"]}
+                    {trx["transaction_no"]}
                     </div>
 
                     <br>
 
                     <b>Kapal:</b>
-                    {vessel.get("nama_kapal", "-")}
+                    {vessel.get(
+                        "nama_kapal",
+                        "-"
+                    )}
 
                     <br>
 
@@ -1544,7 +2210,10 @@ elif menu == "🚛 Input Kendaraan":
                     <br>
 
                     <b>Dermaga:</b>
-                    {vessel.get("nm_dermaga", "-")}
+                    {vessel.get(
+                        "nm_dermaga",
+                        "-"
+                    )}
 
                     </div>
                     """,
@@ -1553,7 +2222,9 @@ elif menu == "🚛 Input Kendaraan":
 
             else:
 
-                st.error(message)
+                st.error(
+                    message
+                )
 
 
 # ============================================================
@@ -1563,22 +2234,20 @@ elif menu == "🚛 Input Kendaraan":
 elif menu == "🖨️ Reprint":
 
     st.markdown(
-        '<div class="main-title">'
-        'Reprint'
-        '</div>',
-        unsafe_allow_html=True
-    )
+        """
+        <div class="main-title">
+        Reprint
+        </div>
 
-    st.markdown(
-        '<div class="sub-title">'
-        'Cari transaksi berdasarkan QR atau '
-        'nomor transaksi'
-        '</div>',
+        <div class="sub-title">
+        Cari transaksi
+        </div>
+        """,
         unsafe_allow_html=True
     )
 
     search = st.text_input(
-        "QR Tiket / Nomor Transaksi"
+        "Nomor Transaksi / QR Tiket"
     )
 
     if st.button(
@@ -1589,8 +2258,8 @@ elif menu == "🖨️ Reprint":
         if not search.strip():
 
             st.warning(
-                "Masukkan QR tiket atau "
-                "nomor transaksi."
+                "Masukkan nomor transaksi "
+                "atau QR tiket."
             )
 
         else:
@@ -1608,8 +2277,6 @@ elif menu == "🖨️ Reprint":
                         schedule_voyages(
                             nama_kapal,
                             voyage_no,
-                            nm_port_asal,
-                            nm_port_dest,
                             nm_dermaga
                         )
                         """
@@ -1630,11 +2297,16 @@ elif menu == "🖨️ Reprint":
 
                 else:
 
-                    trx = result.data[0]
+                    trx = (
+                        result.data[0]
+                    )
 
-                    vessel = trx.get(
-                        "schedule_voyages"
-                    ) or {}
+                    vessel = (
+                        trx.get(
+                            "schedule_voyages"
+                        )
+                        or {}
+                    )
 
                     st.success(
                         "Transaksi ditemukan."
@@ -1642,49 +2314,56 @@ elif menu == "🖨️ Reprint":
 
                     st.write(
                         f"**Nomor:** "
-                        f"{trx.get('transaction_no')}"
+                        f"{trx.get(
+                            'transaction_no'
+                        )}"
                     )
 
                     st.write(
                         f"**QR:** "
-                        f"{trx.get('qr_ticket')}"
+                        f"{trx.get(
+                            'qr_ticket'
+                        )}"
                     )
 
                     st.write(
                         f"**Kapal:** "
-                        f"{vessel.get('nama_kapal', '-')}"
-                    )
-
-                    st.write(
-                        f"**Voyage:** "
-                        f"{vessel.get('voyage_no', '-')}"
+                        f"{vessel.get(
+                            'nama_kapal',
+                            '-'
+                        )}"
                     )
 
                     st.write(
                         f"**Golongan:** "
-                        f"{trx.get('vehicle_group')}"
+                        f"{trx.get(
+                            'vehicle_group'
+                        )}"
                     )
 
                     st.write(
                         f"**Bruto:** "
-                        f"{float(trx.get('bruto_kg', 0)):,.2f} Kg"
+                        f"{float(
+                            trx.get(
+                                'bruto_kg',
+                                0
+                            )
+                        ):,.2f} Kg"
                     )
 
                     st.write(
                         f"**Dermaga:** "
-                        f"{trx.get('destination_berth_name', '-')}"
-                    )
-
-                    st.write(
-                        f"**Waktu:** "
-                        f"{trx.get('transaction_time', '-')}"
+                        f"{trx.get(
+                            'destination_berth_name',
+                            '-'
+                        )}"
                     )
 
                     st.divider()
 
                     st.info(
-                        "Tombol cetak tiket akan "
-                        "ditambahkan pada tahap Reprint."
+                        "Template cetak tiket akan "
+                        "kita buat pada tahap berikutnya."
                     )
 
             except Exception as e:
@@ -1701,16 +2380,15 @@ elif menu == "🖨️ Reprint":
 elif menu == "📊 Laporan":
 
     st.markdown(
-        '<div class="main-title">'
-        'Laporan'
-        '</div>',
-        unsafe_allow_html=True
-    )
+        """
+        <div class="main-title">
+        Laporan
+        </div>
 
-    st.markdown(
-        '<div class="sub-title">'
-        'Log data timbangan'
-        '</div>',
+        <div class="sub-title">
+        Log data timbangan
+        </div>
+        """,
         unsafe_allow_html=True
     )
 
@@ -1738,10 +2416,6 @@ elif menu == "📊 Laporan":
         )
 
         st.stop()
-
-    # --------------------------------------------------------
-    # FILTER
-    # --------------------------------------------------------
 
     try:
 
@@ -1803,10 +2477,6 @@ elif menu == "📊 Laporan":
 
         data = []
 
-    # --------------------------------------------------------
-    # DISPLAY
-    # --------------------------------------------------------
-
     st.write(
         f"**{len(data)} transaksi ditemukan.**"
     )
@@ -1818,7 +2488,9 @@ elif menu == "📊 Laporan":
         for trx in data:
 
             vessel = (
-                trx.get("schedule_voyages")
+                trx.get(
+                    "schedule_voyages"
+                )
                 or {}
             )
 
@@ -1879,23 +2551,21 @@ elif menu == "📊 Laporan":
                     )
             })
 
+        df = pd.DataFrame(
+            rows
+        )
+
         st.dataframe(
-            rows,
+            df,
             use_container_width=True,
             hide_index=True
         )
 
-        # ----------------------------------------------------
-        # CSV
-        # ----------------------------------------------------
-
-        import pandas as pd
-
-        df = pd.DataFrame(rows)
-
         csv = df.to_csv(
             index=False
-        ).encode("utf-8")
+        ).encode(
+            "utf-8-sig"
+        )
 
         st.download_button(
             "⬇️ Download CSV",
