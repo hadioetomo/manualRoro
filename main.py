@@ -18,16 +18,21 @@ if 'temp_no_wa' not in st.session_state:
 if 'user_aktif' not in st.session_state:
     st.session_state['user_aktif'] = ""
 
-# --- FUNGSI AMBIL DATA API (Di-cache agar tidak lambat) ---
+# --- FUNGSI AMBIL DATA API ---
 @st.cache_data(ttl=300) # Data di-cache selama 5 menit
 def fetch_data_jadwal():
     url_api = "https://ptosr.pelindo.co.id/ScheduleBoard/GetData?kd_cabang=61&kd_terminal=601"
     try:
-        response = requests.get(url_api, timeout=10)
+        # Menambahkan headers untuk menyimulasikan akses dari browser
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Accept": "application/json"
+        }
+        response = requests.get(url_api, headers=headers, timeout=10)
         if response.status_code == 200:
             return response.json()
     except Exception as e:
-        st.sidebar.error(f"Gagal koneksi ke API: {e}")
+        return {"error": str(e)}
     return None
 
 # --- HALAMAN LOGIN ---
@@ -43,7 +48,7 @@ def show_login_page():
 
             no_wa = st.text_input("Nomor WhatsApp", placeholder="Contoh: 081234567890")
             
-            # Ambil dictionary USERS dari secrets
+            # Mengambil dictionary USERS dari secrets Streamlit Cloud
             users_dict = st.secrets.get("USERS", {})
             
             if not st.session_state['otp_terkirim']:
@@ -62,7 +67,7 @@ def show_login_page():
                                 else:
                                     st.error(pesan)
                         else:
-                            st.error("⛔ Akses Ditolak: Nomor Anda tidak terdaftar!")
+                            st.error("⛔ Akses Ditolak: Nomor Anda tidak terdaftar di sistem!")
                     else:
                         st.warning("Masukkan nomor WhatsApp terlebih dahulu!")
             
@@ -75,6 +80,7 @@ def show_login_page():
                     if st.button("Verifikasi & Login ✅", type="primary", use_container_width=True):
                         if input_otp == st.session_state['otp_saat_ini']:
                             st.session_state['authenticated'] = True
+                            # Menetapkan nama user yang berhasil login
                             st.session_state['user_aktif'] = users_dict[st.session_state['temp_no_wa']]
                             st.rerun()
                         else:
@@ -88,6 +94,7 @@ def show_login_page():
 
 # --- HALAMAN UTAMA ---
 def show_main_app():
+    # Menampilkan notifikasi Toast saat pertama kali login
     if 'welcome_shown' not in st.session_state:
         st.toast(f"Selamat datang, {st.session_state['user_aktif']}! 👋", icon="✅")
         st.session_state['welcome_shown'] = True
@@ -106,41 +113,53 @@ def show_main_app():
     st.subheader("Pelabuhan Tanjung Perak Surabaya")
     st.divider()
     
-    # PENGOLAHAN DATA API
+    # --- PENGOLAHAN DATA API & DEBUGGING ---
     data_api = fetch_data_jadwal()
-    mapping_kapal = {} # Dictionary untuk menyimpan pasangan Kapal -> Pelabuhan
+    mapping_kapal = {} 
     
-    if data_api and isinstance(data_api, list):
-        for item in data_api:
-            nama = item.get("NAMA_KAPAL")
-            destinasi = item.get("NM_PORT_DEST")
+    with st.expander("🛠️ Cek Respon API (Klik jika dropdown kapal kosong)"):
+        if data_api is None:
+            st.error("API mengembalikan nilai KOSONG (IP kemungkinan diblokir).")
+        elif isinstance(data_api, dict) and "error" in data_api:
+            st.error(f"Error Koneksi: {data_api['error']}")
+        else:
+            st.write("Tipe Data:", type(data_api))
+            st.json(data_api) 
             
-            # Jika ada nama kapal, masukkan ke dalam dictionary
+    # Logika Parsing Data Otomatis
+    if data_api and not (isinstance(data_api, dict) and "error" in data_api):
+        list_data = []
+        if isinstance(data_api, dict) and "data" in data_api:
+            list_data = data_api["data"]
+        elif isinstance(data_api, list):
+            list_data = data_api
+            
+        for item in list_data:
+            # Menggunakan .get() agar tidak error jika format key berubah (huruf besar/kecil)
+            nama = item.get("NAMA_KAPAL") or item.get("nama_kapal")
+            destinasi = item.get("NM_PORT_DEST") or item.get("nm_port_dest")
+            
             if nama:
-                # Jika NM_PORT_DEST kosong dari API, beri nilai default
                 mapping_kapal[nama] = destinasi if destinasi else "Tidak diketahui"
 
     # Buat list untuk dropdown opsi Kapal
     list_opsi_kapal = ["Pilih Kapal..."] + list(mapping_kapal.keys())
 
-    # Tabs
+    # --- TABS ANTARMUKA ---
     tab_input, tab_reprint, tab_rekap = st.tabs(["✍️ INPUT", "🖨️ REPRINT", "📊 REKAP"])
 
     with tab_input:
         st.write("### Form Input Kendaraan")
         
-        # Dropdown Kapal
         kapal_terpilih = st.selectbox("KAPAL BEROPERASI", list_opsi_kapal)
         
-        # Logika pengisian otomatis NM_PORT_DEST
+        # Logika autofill Pelabuhan Tujuan
         if kapal_terpilih == "Pilih Kapal...":
             default_pelabuhan = "Otomatis terisi..."
         else:
             default_pelabuhan = mapping_kapal.get(kapal_terpilih, "Tidak diketahui")
             
-        # Field Pelabuhan (Disabled agar tidak bisa diedit manual)
         pelabuhan = st.text_input("PELABUHAN TUJUAN", value=default_pelabuhan, disabled=True)
-        
         plat_nomor = st.text_input("PLAT NOMOR KENDARAAN", placeholder="Contoh: L 1234 XY")
         golongan = st.selectbox("GOLONGAN / JENIS", ["Golongan I", "Golongan II", "Golongan III"])
         tipe_timbangan = st.radio("BERAT / TONASE (KG)", ["Manual", "Otomatis"], horizontal=True)
@@ -166,9 +185,9 @@ def show_main_app():
         with col2:
             nama_kapal_filter = st.selectbox("Filter Kapal Berkegiatan", ["Semua Kapal"] + list(mapping_kapal.keys()))
 
-        st.info("Fitur rekap aktif. Integrasikan dengan database Anda untuk melihat data historis.")
+        st.info("Fitur rekap aktif. Nantinya akan dihubungkan ke Database.")
 
-# --- ROUTING ---
+# --- ROUTING OTENTIKASI ---
 if st.session_state['authenticated']:
     show_main_app()
 else:
