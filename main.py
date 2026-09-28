@@ -18,6 +18,18 @@ if 'temp_no_wa' not in st.session_state:
 if 'user_aktif' not in st.session_state:
     st.session_state['user_aktif'] = ""
 
+# --- FUNGSI AMBIL DATA API (Di-cache agar tidak lambat) ---
+@st.cache_data(ttl=300) # Data di-cache selama 5 menit
+def fetch_data_jadwal():
+    url_api = "https://ptosr.pelindo.co.id/ScheduleBoard/GetData?kd_cabang=61&kd_terminal=601"
+    try:
+        response = requests.get(url_api, timeout=10)
+        if response.status_code == 200:
+            return response.json()
+    except Exception as e:
+        st.sidebar.error(f"Gagal koneksi ke API: {e}")
+    return None
+
 # --- HALAMAN LOGIN ---
 def show_login_page():
     st.markdown("<br><br>", unsafe_allow_html=True)
@@ -45,7 +57,7 @@ def show_login_page():
                                 if sukses:
                                     st.session_state['otp_saat_ini'] = otp
                                     st.session_state['otp_terkirim'] = True
-                                    st.session_state['temp_no_wa'] = no_wa # Simpan nomor sementara
+                                    st.session_state['temp_no_wa'] = no_wa 
                                     st.rerun()
                                 else:
                                     st.error(pesan)
@@ -63,7 +75,6 @@ def show_login_page():
                     if st.button("Verifikasi & Login ✅", type="primary", use_container_width=True):
                         if input_otp == st.session_state['otp_saat_ini']:
                             st.session_state['authenticated'] = True
-                            # Tetapkan nama user aktif berdasarkan nomor WA yang berhasil verifikasi
                             st.session_state['user_aktif'] = users_dict[st.session_state['temp_no_wa']]
                             st.rerun()
                         else:
@@ -77,12 +88,10 @@ def show_login_page():
 
 # --- HALAMAN UTAMA ---
 def show_main_app():
-    # Menampilkan notifikasi popup (toast) saat berhasil masuk
     if 'welcome_shown' not in st.session_state:
         st.toast(f"Selamat datang, {st.session_state['user_aktif']}! 👋", icon="✅")
         st.session_state['welcome_shown'] = True
 
-    # Sidebar untuk info pengguna dan tombol logout
     with st.sidebar:
         st.info(f"👤 **Petugas Aktif:**\n\n{st.session_state['user_aktif']}")
         if st.button("🚪 Logout", use_container_width=True):
@@ -97,24 +106,49 @@ def show_main_app():
     st.subheader("Pelabuhan Tanjung Perak Surabaya")
     st.divider()
     
-    # (Kode Fetch API list_kapal sama seperti sebelumnya...)
-    list_kapal = ["Pilih Kapal...", "KM Dharma Rucitra", "KM Kumala"]
+    # PENGOLAHAN DATA API
+    data_api = fetch_data_jadwal()
+    mapping_kapal = {} # Dictionary untuk menyimpan pasangan Kapal -> Pelabuhan
+    
+    if data_api and isinstance(data_api, list):
+        for item in data_api:
+            nama = item.get("NAMA_KAPAL")
+            destinasi = item.get("NM_PORT_DEST")
+            
+            # Jika ada nama kapal, masukkan ke dalam dictionary
+            if nama:
+                # Jika NM_PORT_DEST kosong dari API, beri nilai default
+                mapping_kapal[nama] = destinasi if destinasi else "Tidak diketahui"
 
+    # Buat list untuk dropdown opsi Kapal
+    list_opsi_kapal = ["Pilih Kapal..."] + list(mapping_kapal.keys())
+
+    # Tabs
     tab_input, tab_reprint, tab_rekap = st.tabs(["✍️ INPUT", "🖨️ REPRINT", "📊 REKAP"])
 
     with tab_input:
         st.write("### Form Input Kendaraan")
-        kapal = st.selectbox("KAPAL BEROPERASI", list_kapal)
-        pelabuhan = st.text_input("PELABUHAN TUJUAN", value="Otomatis terisi...", disabled=True)
+        
+        # Dropdown Kapal
+        kapal_terpilih = st.selectbox("KAPAL BEROPERASI", list_opsi_kapal)
+        
+        # Logika pengisian otomatis NM_PORT_DEST
+        if kapal_terpilih == "Pilih Kapal...":
+            default_pelabuhan = "Otomatis terisi..."
+        else:
+            default_pelabuhan = mapping_kapal.get(kapal_terpilih, "Tidak diketahui")
+            
+        # Field Pelabuhan (Disabled agar tidak bisa diedit manual)
+        pelabuhan = st.text_input("PELABUHAN TUJUAN", value=default_pelabuhan, disabled=True)
+        
         plat_nomor = st.text_input("PLAT NOMOR KENDARAAN", placeholder="Contoh: L 1234 XY")
         golongan = st.selectbox("GOLONGAN / JENIS", ["Golongan I", "Golongan II", "Golongan III"])
         tipe_timbangan = st.radio("BERAT / TONASE (KG)", ["Manual", "Otomatis"], horizontal=True)
         berat = st.number_input("Input Berat", min_value=0)
         
         if st.button("🖨️ SIMPAN & CETAK TIKET", type="primary", use_container_width=True):
-            if kapal != "Pilih Kapal..." and plat_nomor:
-                # Menambahkan nama user aktif ke dalam respon berhasil
-                st.success(f"Data tiket {plat_nomor} untuk {kapal} berhasil disimpan! (Dicatat oleh: **{st.session_state['user_aktif']}**)")
+            if kapal_terpilih != "Pilih Kapal..." and plat_nomor:
+                st.success(f"Data tiket {plat_nomor} untuk {kapal_terpilih} ({default_pelabuhan}) berhasil disimpan! (Dicatat oleh: **{st.session_state['user_aktif']}**)")
             else:
                 st.error("Pastikan Kapal dan Plat Nomor sudah diisi.")
 
@@ -126,8 +160,13 @@ def show_main_app():
 
     with tab_rekap:
         st.write("### Rekapitulasi Kegiatan Kapal")
-        # (Kode Rekap sama seperti sebelumnya...)
-        st.info("Fitur rekap aktif.")
+        col1, col2 = st.columns(2)
+        with col1:
+            tanggal_kegiatan = st.date_input("Tanggal Kegiatan", datetime.today())
+        with col2:
+            nama_kapal_filter = st.selectbox("Filter Kapal Berkegiatan", ["Semua Kapal"] + list(mapping_kapal.keys()))
+
+        st.info("Fitur rekap aktif. Integrasikan dengan database Anda untuk melihat data historis.")
 
 # --- ROUTING ---
 if st.session_state['authenticated']:
